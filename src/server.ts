@@ -1,13 +1,13 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import OpenAI from 'openai';
 
-// Extend WebSocket type to include our custom properties
+// Extended interfaces
 interface ExtendedWebSocket extends WebSocket {
     isAlive: boolean;
 }
 
-// Update WebSocketMessage interface
 interface WebSocketMessage {
     type?: string;
     event?: string;
@@ -22,37 +22,31 @@ interface WebSocketMessage {
     };
 }
 
+interface StreamSession {
+    openaiStream: any; // OpenAI Audio stream instance
+    conversation: OpenAI.Chat.ChatCompletionMessageParam[];
+}
+
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 3000;
 
-// Keep track of active connections
-const connections = new Map<string, ExtendedWebSocket>();
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'healthy' });
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
 });
+
+// Track active streaming sessions
+const streamingSessions = new Map<string, StreamSession>();
 
 wss.on('connection', (ws: WebSocket) => {
     const extWs = ws as ExtendedWebSocket;
     console.log('New WebSocket connection established');
 
-    // Set up connection keepalive
     extWs.isAlive = true;
     extWs.on('pong', () => {
         extWs.isAlive = true;
     });
-
-    // Send initial mark message to Twilio
-    const mark = {
-        event: 'mark',
-        streamSid: 'initial',
-        mark: {
-            name: 'connected'
-        }
-    };
-    extWs.send(JSON.stringify(mark));
 
     extWs.on('message', async (message: string) => {
         try {
@@ -61,42 +55,63 @@ wss.on('connection', (ws: WebSocket) => {
 
             switch (data.event || data.type) {
                 case 'start':
-                    console.log('Stream starting:', data.streamSid);
                     if (data.streamSid) {
-                        connections.set(data.streamSid, extWs);
-                        extWs.send(JSON.stringify({
-                            event: 'mark',
-                            streamSid: data.streamSid,
-                            mark: { name: 'start' }
-                        }));
+                        console.log('Starting new stream session:', data.streamSid);
+                        
+                        // Initialize OpenAI real-time stream
+                        const openaiStream = await openai.audio.stream();
+                        
+                        // Configure handlers for OpenAI stream
+                        openaiStream.on('text', (text: string) => {
+                            console.log('Received text from OpenAI:', text);
+                            // Handle real-time transcription
+                        });
+
+                        openaiStream.on('speech', (audio: Buffer) => {
+                            console.log('Received audio response from OpenAI');
+                            // Send audio back through Twilio WebSocket
+                            const base64Audio = audio.toString('base64');
+                            extWs.send(JSON.stringify({
+                                event: 'media',
+                                streamSid: data.streamSid,
+                                media: {
+                                    payload: base64Audio
+                                }
+                            }));
+                        });
+
+                        // Store session
+                        streamingSessions.set(data.streamSid, {
+                            openaiStream,
+                            conversation: [{
+                                role: 'system',
+                                content: 'You are a helpful assistant having a phone conversation. Keep responses concise and natural.'
+                            }]
+                        });
                     }
                     break;
 
                 case 'media':
-                    if (data.media?.payload) {
-                        console.log('Media chunk received:', {
-                            streamSid: data.streamSid,
-                            timestamp: data.media.timestamp
-                        });
-                        if (data.streamSid) {
-                            extWs.send(JSON.stringify({
-                                event: 'mark',
-                                streamSid: data.streamSid,
-                                mark: { name: 'alive' }
-                            }));
+                    if (data.streamSid && data.media?.payload) {
+                        const session = streamingSessions.get(data.streamSid);
+                        if (session) {
+                            // Send audio chunk to OpenAI stream
+                            const audioChunk = Buffer.from(data.media.payload, 'base64');
+                            await session.openaiStream.write(audioChunk);
                         }
                     }
                     break;
 
                 case 'stop':
-                    console.log('Stream stopping:', data.streamSid);
                     if (data.streamSid) {
-                        connections.delete(data.streamSid);
+                        console.log('Stopping stream session:', data.streamSid);
+                        const session = streamingSessions.get(data.streamSid);
+                        if (session) {
+                            await session.openaiStream.close();
+                            streamingSessions.delete(data.streamSid);
+                        }
                     }
                     break;
-
-                default:
-                    console.log('Unknown message:', data);
             }
         } catch (error) {
             console.error('Error processing message:', error);
@@ -105,12 +120,6 @@ wss.on('connection', (ws: WebSocket) => {
 
     extWs.on('close', () => {
         console.log('WebSocket connection closed');
-        // Clean up connections map
-        for (const [streamSid, socket] of connections.entries()) {
-            if (socket === extWs) {
-                connections.delete(streamSid);
-            }
-        }
     });
 
     extWs.on('error', (error) => {
@@ -118,24 +127,15 @@ wss.on('connection', (ws: WebSocket) => {
     });
 });
 
-// Implement keepalive ping-pong
+// Keepalive interval
 const interval = setInterval(() => {
     wss.clients.forEach((ws: WebSocket) => {
         const extWs = ws as ExtendedWebSocket;
-        if (extWs.isAlive === false) {
-            console.log('Terminating inactive connection');
-            return extWs.terminate();
-        }
-        
+        if (extWs.isAlive === false) return extWs.terminate();
         extWs.isAlive = false;
         extWs.ping();
     });
 }, 30000);
-
-// Clean up on server close
-wss.on('close', () => {
-    clearInterval(interval);
-});
 
 server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
