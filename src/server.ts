@@ -512,10 +512,13 @@ wss.on('connection', async (ws: WebSocket) => {
         }
     });
 
-    extWs.on('error', (error) => {
-        console.error('WebSocket error:', error);
+extWs.on('error', (error: unknown) => {
+        if (error instanceof Error) {
+            console.error('WebSocket error:', error.message);
+        } else {
+            console.error('WebSocket error:', error);
+        }
     });
-});
 
 // Audio Queue Processing
 async function processAudioQueue(audioSession: AudioSession) {
