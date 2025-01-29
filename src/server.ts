@@ -2,15 +2,10 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
-import { 
-    RTCPeerConnection, 
-    MediaStream, 
-    RTCAudioSink,
-    RTCAudioSource,
-    nonstandard,
-    RTCAudioData
-} from 'wrtc';
+import wrtc from 'wrtc';
 import dotenv from 'dotenv';
+
+const { RTCPeerConnection, MediaStream, RTCAudioSink, nonstandard } = wrtc;
 
 dotenv.config();
 
@@ -26,8 +21,8 @@ interface AudioConfig {
 }
 
 interface AudioSession {
-    audioSource: RTCAudioSource;
-    audioSink: RTCAudioSink;
+    audioSource: typeof wrtc.nonstandard.RTCAudioSource;
+    audioSink: typeof wrtc.RTCAudioSink;
     bufferQueue: Buffer[];
     isProcessing: boolean;
     twilioWs: WebSocket;
@@ -56,6 +51,13 @@ interface OpenAIResponse {
     client_secret: {
         value: string;
     };
+}
+
+interface RTCAudioData {
+    samples: Float32Array;
+    sampleRate: number;
+    channels?: number;
+    timestamp?: number;
 }
 
 // Constants
@@ -156,7 +158,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
 
-    const audioSource = new nonstandard.RTCAudioSource();
+    const audioSource = new wrtc.nonstandard.RTCAudioSource();
     const audioTrack = audioSource.createTrack();
     
     const audioTransceiver = pc.addTransceiver(audioTrack, {
