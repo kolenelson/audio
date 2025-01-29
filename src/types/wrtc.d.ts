@@ -71,6 +71,17 @@ interface RTCIceCandidatePair {
 
 declare module 'wrtc' {
     import { EventEmitter } from 'events';
+    
+    const wrtc: {
+        RTCPeerConnection: typeof RTCPeerConnection;
+        MediaStream: typeof MediaStream;
+        RTCAudioSink: typeof RTCAudioSink;
+        nonstandard: {
+            RTCAudioSource: typeof RTCAudioSource;
+        };
+    };
+    
+    export default wrtc;
 
     export interface RTCAudioData {
         samples: Float32Array;
