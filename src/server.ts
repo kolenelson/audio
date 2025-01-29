@@ -18,6 +18,11 @@ interface AudioConfig {
     bitsPerSample: number;
 }
 
+// Extend MediaStreamTrack to include the 'remote' property
+interface WrtcMediaStreamTrack extends MediaStreamTrack {
+    remote: boolean;
+}
+
 interface AudioSession {
     audioSource: InstanceType<typeof wrtc.nonstandard.RTCAudioSource>;
     audioSink: InstanceType<typeof wrtc.RTCAudioSink>;
@@ -159,7 +164,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
     const audioSource = new wrtc.nonstandard.RTCAudioSource();
     const audioTrack = audioSource.createTrack();
     
-    const audioTransceiver = pc.addTransceiver(audioTrack as unknown as MediaStreamTrack, {
+    const audioTransceiver = pc.addTransceiver(audioTrack as InstanceType<typeof wrtc.MediaStreamTrack>, {
         direction: 'sendrecv'
     });
 
@@ -310,80 +315,3 @@ wss.on('connection', async (ws: WebSocket) => {
                         if (session) {
                             session.audioSession.bufferQueue = [];
                             session.audioSession.isProcessing = false;
-                            session.peerConnection.close();
-                            streamingSessions.delete(data.streamSid);
-
-                            extWs.send(JSON.stringify({
-                                event: 'mark',
-                                streamSid: data.streamSid,
-                                mark: { name: 'disconnected' }
-                            }));
-                        }
-                    }
-                    break;
-            }
-        } catch (error) {
-            console.error('Error processing message:', error);
-        }
-    });
-
-    extWs.on('close', () => {
-        console.log('WebSocket connection closed');
-    });
-
-    extWs.on('error', (error) => {
-        console.error('WebSocket error:', error);
-    });
-});
-
-// Audio Queue Processing
-async function processAudioQueue(audioSession: AudioSession) {
-    if (audioSession.isProcessing || audioSession.bufferQueue.length === 0) return;
-
-    audioSession.isProcessing = true;
-
-    try {
-        while (audioSession.bufferQueue.length > 0) {
-            const audioChunk = audioSession.bufferQueue.shift();
-            if (!audioChunk) continue;
-
-            const samples = new Float32Array(audioChunk.length / 2);
-            for (let i = 0; i < samples.length; i++) {
-                samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
-            }
-
-            const audioData: RTCAudioData = {
-                samples,
-                sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                channels: TWILIO_AUDIO_CONFIG.channels,
-                timestamp: Date.now()
-            };
-
-            (audioSession.audioSource as any).onData(audioData);
-
-            await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
-        }
-    } finally {
-        audioSession.isProcessing = false;
-    }
-}
-
-// Keep-alive interval
-const interval = setInterval(() => {
-    wss.clients.forEach((ws: WebSocket) => {
-        const extWs = ws as ExtendedWebSocket;
-        if (extWs.isAlive === false) return extWs.terminate();
-        extWs.isAlive = false;
-        extWs.ping();
-    });
-}, 30000);
-
-// Cleanup on server close
-wss.on('close', () => {
-    clearInterval(interval);
-});
-
-// Start server
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
