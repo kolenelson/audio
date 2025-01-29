@@ -59,6 +59,12 @@ interface OpenAIResponse {
 }
 
 // Constants
+
+const answer: RTCSessionDescriptionInit = {
+    type: 'answer',
+    sdp: await sdpResponse.text(),
+};
+
 const TWILIO_AUDIO_CONFIG: AudioConfig = {
     sampleRate: 8000,
     channels: 1,
