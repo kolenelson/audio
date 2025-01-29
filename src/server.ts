@@ -59,12 +59,6 @@ interface OpenAIResponse {
 }
 
 // Constants
-
-const answer: RTCSessionDescriptionInit = {
-    type: 'answer',
-    sdp: await sdpResponse.text(),
-};
-
 const TWILIO_AUDIO_CONFIG: AudioConfig = {
     sampleRate: 8000,
     channels: 1,
@@ -219,19 +213,24 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
     });
     await pc.setLocalDescription(offer);
 
-    const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
-        method: "POST",
-        body: offer.sdp,
-        headers: {
-            Authorization: `Bearer ${ephemeralKey}`,
-            "Content-Type": "application/sdp"
-        },
-    });
+    try {
+        const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+            method: "POST",
+            body: offer.sdp,
+            headers: {
+                Authorization: `Bearer ${ephemeralKey}`,
+                "Content-Type": "application/sdp"
+            },
+        });
 
-    const answer = {
-        type: "answer" as RTCSdpType,
-        sdp: await sdpResponse.text(),
-    };
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const answer: RTCSessionDescriptionInit = {
+            type: "answer",
+            sdp: await response.text()
+        };
     await pc.setRemoteDescription(answer);
 
     return {
