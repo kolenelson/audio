@@ -87,14 +87,15 @@ const TWILIO_AUDIO_CONFIG: AudioConfig = {
 };
 
 const WEBRTC_AUDIO_CONFIG: AudioConfig = {
-    sampleRate: 48000,
+    sampleRate: 16000,  // OpenAI expects 16kHz
     channels: 1,
     bitsPerSample: 16
 };
 
 const AUDIO_CONFIG = {
-    chunkSize: 160,  // 20ms of 8kHz audio
-    processingInterval: 10,  // Reduced from 20ms to 10ms for smoother processing
+    chunkSize: 160,  // Twilio's chunk size
+    requiredChunkSize: 960,  // OpenAI's expected chunk size
+    processingInterval: 10,
     maxQueueSize: 50
 };
 
@@ -176,6 +177,7 @@ async function getEphemeralToken(): Promise<string> {
         throw error;
     }
 }
+
 function convertAudioFormat(
     samples: Float32Array,
     fromConfig: AudioConfig,
@@ -266,14 +268,14 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
                                 channels: frame.channels || 1
                             });
 
-                            // Convert from OpenAI's 48kHz to Twilio's 8kHz
+                            // Convert from OpenAI's 16kHz to Twilio's 8kHz
                             const convertedAudio = convertAudioFormat(
                                 frame.samples,
                                 { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
                                 TWILIO_AUDIO_CONFIG
                             );
 
-                            // Split converted audio into 160-byte chunks for Twilio
+                            // Split into 160-byte chunks for Twilio
                             for (let offset = 0; offset < convertedAudio.length; offset += 160) {
                                 const chunk = convertedAudio.slice(offset, Math.min(offset + 160, convertedAudio.length));
                                 if (chunk.length !== 160) continue;  // Skip incomplete chunks
@@ -364,7 +366,8 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
                 console.error('Error processing OpenAI message:', error);
             }
         };
-// Initialize WebRTC connection
+
+        // Initialize WebRTC connection
         console.log('Creating offer...');
         const offer = await pc.createOffer({
             offerToReceiveAudio: true
