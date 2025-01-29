@@ -1,88 +1,4 @@
-// WebRTC standard types
-interface RTCSessionDescriptionInit {
-    type: RTCSdpType;
-    sdp: string;
-}
-type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback';
-
-interface RTCDataChannel extends EventTarget {
-    readonly label: string;
-    readonly ordered: boolean;
-    readonly maxPacketLifeTime: number | null;
-    readonly maxRetransmits: number | null;
-    readonly protocol: string;
-    readonly negotiated: boolean;
-    readonly id: number | null;
-    readonly readyState: RTCDataChannelState;
-    readonly bufferedAmount: number;
-    readonly bufferedAmountLowThreshold: number;
-    close(): void;
-    send(data: string | Blob | ArrayBuffer | ArrayBufferView): void;
-    onopen: ((this: RTCDataChannel, ev: Event) => any) | null;
-    onmessage: ((this: RTCDataChannel, ev: MessageEvent) => any) | null;
-    onclose: ((this: RTCDataChannel, ev: Event) => any) | null;
-    onerror: ((this: RTCDataChannel, ev: Event) => any) | null;
-}
-
-interface RTCRtpTransceiver {
-    readonly mid: string | null;
-    readonly sender: RTCRtpSender;
-    readonly receiver: RTCRtpReceiver;
-    readonly stopped: boolean;
-    readonly direction: RTCRtpTransceiverDirection;
-    setDirection(direction: RTCRtpTransceiverDirection): Promise<void>;
-    stop(): void;
-}
-
-interface RTCRtpSender {
-    readonly track: MediaStreamTrack | null;
-    readonly transport: RTCDtlsTransport | null;
-    readonly rtcpTransport: RTCDtlsTransport | null;
-}
-
-interface RTCRtpReceiver {
-    readonly track: MediaStreamTrack;
-    readonly transport: RTCDtlsTransport | null;
-    readonly rtcpTransport: RTCDtlsTransport | null;
-}
-
-interface RTCDtlsTransport extends EventTarget {
-    readonly state: RTCDtlsTransportState;
-    readonly iceTransport: RTCIceTransport;
-}
-
-type RTCDtlsTransportState = 'new' | 'connecting' | 'connected' | 'closed' | 'failed';
-type RTCDataChannelState = 'connecting' | 'open' | 'closing' | 'closed';
-type RTCRtpTransceiverDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
-
-interface RTCIceTransport extends EventTarget {
-    readonly state: RTCIceTransportState;
-    readonly gatheringState: RTCIceGatheringState;
-    getSelectedCandidatePair(): RTCIceCandidatePair | null;
-}
-
-type RTCIceTransportState = 'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed';
-type RTCIceGatheringState = 'new' | 'gathering' | 'complete';
-
-interface RTCIceCandidatePair {
-    local: RTCIceCandidate;
-    remote: RTCIceCandidate;
-}
-
 declare module 'wrtc' {
-    import { EventEmitter } from 'events';
-    
-    const wrtc: {
-        RTCPeerConnection: typeof RTCPeerConnection;
-        MediaStream: typeof MediaStream;
-        RTCAudioSink: typeof RTCAudioSink;
-        nonstandard: {
-            RTCAudioSource: typeof RTCAudioSource;
-        };
-    };
-    
-    export default wrtc;
-
     export interface RTCAudioData {
         samples: Float32Array;
         sampleRate: number;
@@ -91,7 +7,6 @@ declare module 'wrtc' {
     }
 
     export class RTCAudioSource {
-        constructor();
         createTrack(): MediaStreamTrack;
         onData(data: RTCAudioData): void;
     }
@@ -102,7 +17,7 @@ declare module 'wrtc' {
         stop(): void;
     }
 
-    export class RTCPeerConnection extends EventEmitter {
+    export class RTCPeerConnection implements RTCPeerConnectionType {
         constructor(configuration?: RTCConfiguration);
         createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
         setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
@@ -111,31 +26,73 @@ declare module 'wrtc' {
         createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel;
         close(): void;
         
-        // Event handlers
-        onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null;
-        oniceconnectionstatechange: (() => void) | null;
-        onicegatheringstatechange: (() => void) | null;
-        onnegotiationneeded: (() => void) | null;
-        ondatachannel: ((event: RTCDataChannelEvent) => void) | null;
-        
-        // Properties
         readonly localDescription: RTCSessionDescription | null;
+        readonly currentLocalDescription: RTCSessionDescription | null;
+        readonly pendingLocalDescription: RTCSessionDescription | null;
         readonly remoteDescription: RTCSessionDescription | null;
-        readonly iceConnectionState: RTCIceConnectionState;
-        readonly iceGatheringState: RTCIceGatheringState;
+        readonly currentRemoteDescription: RTCSessionDescription | null;
+        readonly pendingRemoteDescription: RTCSessionDescription | null;
         readonly signalingState: RTCSignalingState;
+        readonly iceGatheringState: RTCIceGatheringState;
+        readonly iceConnectionState: RTCIceConnectionState;
+        readonly connectionState: RTCPeerConnectionState;
+        readonly canTrickleIceCandidates: boolean | null;
+        
+        onconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        ondatachannel: ((this: RTCPeerConnection, ev: RTCDataChannelEvent) => any) | null;
+        onicecandidate: ((this: RTCPeerConnection, ev: RTCPeerConnectionIceEvent) => any) | null;
+        oniceconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onicegatheringstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onnegotiationneeded: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onsignalingstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        ontrack: ((this: RTCPeerConnection, ev: RTCTrackEvent) => any) | null;
     }
 
-    export class MediaStream extends EventEmitter {
+    export interface MediaStreamTrackInit {
+        kind: string;
+        id?: string;
+    }
+
+    export class MediaStreamTrack implements MediaStreamTrackType {
+        constructor(init: MediaStreamTrackInit);
+        readonly enabled: boolean;
+        readonly id: string;
+        readonly kind: string;
+        readonly label: string;
+        readonly muted: boolean;
+        readonly readyState: MediaStreamTrackState;
+        readonly remote: boolean;
+        onended: ((this: MediaStreamTrack, ev: Event) => any) | null;
+        onmute: ((this: MediaStreamTrack, ev: Event) => any) | null;
+        onunmute: ((this: MediaStreamTrack, ev: Event) => any) | null;
+        clone(): MediaStreamTrack;
+        stop(): void;
+    }
+
+    export class MediaStream implements MediaStreamType {
         constructor(tracks?: MediaStreamTrack[]);
+        readonly active: boolean;
+        readonly id: string;
         addTrack(track: MediaStreamTrack): void;
-        removeTrack(track: MediaStreamTrack): void;
+        clone(): MediaStream;
+        getAudioTracks(): MediaStreamTrack[];
+        getTrackById(trackId: string): MediaStreamTrack | null;
         getTracks(): MediaStreamTrack[];
         getVideoTracks(): MediaStreamTrack[];
-        getAudioTracks(): MediaStreamTrack[];
+        removeTrack(track: MediaStreamTrack): void;
     }
 
-    export const nonstandard: {
+    const nonstandard: {
         RTCAudioSource: typeof RTCAudioSource;
     };
+
+    const wrtc: {
+        RTCPeerConnection: typeof RTCPeerConnection;
+        MediaStream: typeof MediaStream;
+        MediaStreamTrack: typeof MediaStreamTrack;
+        RTCAudioSink: typeof RTCAudioSink;
+        nonstandard: typeof nonstandard;
+    };
+
+    export default wrtc;
 }
