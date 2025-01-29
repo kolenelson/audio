@@ -7,7 +7,8 @@ import {
     MediaStream, 
     RTCAudioSink,
     RTCAudioSource,
-    nonstandard
+    nonstandard,
+    RTCAudioData
 } from 'wrtc';
 import dotenv from 'dotenv';
 
@@ -48,6 +49,12 @@ interface TwilioMediaMessage {
         track?: string;
         chunk?: number;
         timestamp?: string;
+    };
+}
+
+interface OpenAIResponse {
+    client_secret: {
+        value: string;
     };
 }
 
@@ -97,7 +104,7 @@ async function getEphemeralToken(): Promise<string> {
             voice: "verse",
         }),
     });
-    const data = await response.json();
+    const data = await response.json() as OpenAIResponse;
     return data.client_secret.value;
 }
 
@@ -171,7 +178,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         mediaChunkCounter: 0
     };
 
-    audioSink.ondata = (frame) => {
+    audioSink.ondata = (frame: RTCAudioData) => {
         if (!frame.samples || !frame.sampleRate) return;
 
         try {
@@ -216,7 +223,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
     });
 
     const answer = {
-        type: "answer",
+        type: "answer" as RTCSdpType,
         sdp: await sdpResponse.text(),
     };
     await pc.setRemoteDescription(answer);
@@ -241,7 +248,15 @@ wss.on('connection', async (ws: WebSocket) => {
 
     extWs.on('message', async (message: string) => {
         try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(message) as {
+                event?: string;
+                type?: string;
+                streamSid?: string;
+                media?: {
+                    payload: string;
+                };
+            };
+            
             console.log('Received message event:', data.event || data.type);
 
             switch (data.event || data.type) {
