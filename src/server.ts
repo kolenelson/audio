@@ -2,9 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
-import wrtc from 'wrtc';
 import dotenv from 'dotenv';
-
+import wrtc from 'wrtc';
 const { RTCPeerConnection, MediaStream } = wrtc;
 const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
 
@@ -49,7 +48,7 @@ interface AudioSession {
 }
 
 interface StreamSession {
-    peerConnection: RTCPeerConnection;
+    peerConnection: InstanceType<typeof RTCPeerConnection>;
     dataChannel: RTCDataChannel;
     audioTransceiver: RTCRtpTransceiver;
     audioSession: AudioSession;
