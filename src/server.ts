@@ -231,14 +231,19 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
             type: "answer",
             sdp: await response.text()
         };
-    await pc.setRemoteDescription(answer);
-
-    return {
-        peerConnection: pc,
-        dataChannel: dc,
-        audioTransceiver,
-        audioSession
-    };
+        
+        await pc.setRemoteDescription(answer);
+        
+        return {
+            peerConnection: pc,
+            dataChannel: dc,
+            audioTransceiver,
+            audioSession
+        };
+    } catch (error) {
+        console.error('Error establishing WebRTC connection:', error);
+        throw error;
+    }
 }
 
 // WebSocket Connection Handler
