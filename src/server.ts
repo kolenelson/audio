@@ -92,8 +92,8 @@ const WEBRTC_AUDIO_CONFIG: AudioConfig = {
 };
 
 const AUDIO_CONFIG = {
-    chunkSize: 320,
-    processingInterval: 20,
+    chunkSize: 160,  // Changed from 320 to 160
+    processingInterval: 15, // Changed from 20 to 15
     maxQueueSize: 50
 };
 
@@ -496,6 +496,7 @@ wss.on('connection', async (ws: WebSocket) => {
 });
 
 // Audio Queue Processing
+// Audio Queue Processing
 async function processAudioQueue(audioSession: AudioSession) {
     if (audioSession.isProcessing || audioSession.bufferQueue.length === 0) return;
 
@@ -506,22 +507,36 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            const samples = new Float32Array(audioChunk.length / 2);
-            for (let i = 0; i < samples.length; i++) {
-                samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
+            // Split the buffer into smaller chunks of 160 bytes
+            const chunkSize = 160; // 20ms of 8kHz audio
+            for (let offset = 0; offset < audioChunk.length; offset += chunkSize) {
+                const chunk = audioChunk.slice(offset, offset + chunkSize);
+                if (chunk.length < chunkSize) continue; // Skip incomplete chunks
+
+                const samples = new Float32Array(chunk.length / 2);
+                for (let i = 0; i < samples.length; i++) {
+                    samples[i] = chunk.readInt16LE(i * 2) / 32768.0;
+                }
+
+                const audioData: RTCAudioData = {
+                    samples,
+                    sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
+                    channels: TWILIO_AUDIO_CONFIG.channels,
+                    timestamp: Date.now()
+                };
+
+                try {
+                    audioSession.audioSource.onData(audioData);
+                } catch (error) {
+                    console.error('Error processing audio chunk:', error);
+                }
+
+                // Add a small delay between chunks to prevent overwhelming the audio pipeline
+                await new Promise(resolve => setTimeout(resolve, 15)); // 15ms delay
             }
-
-            const audioData: RTCAudioData = {
-                samples,
-                sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                channels: TWILIO_AUDIO_CONFIG.channels,
-                timestamp: Date.now()
-            };
-
-            (audioSession.audioSource as any).onData(audioData);
-
-            await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
         }
+    } catch (error) {
+        console.error('Error in audio queue processing:', error);
     } finally {
         audioSession.isProcessing = false;
     }
