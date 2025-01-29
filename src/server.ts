@@ -3,8 +3,9 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
 import wrtc, { nonstandard } from 'wrtc';
-const { RTCPeerConnection, RTCAudioSink, MediaStream } = wrtc;
 import dotenv from 'dotenv';
+
+const { RTCPeerConnection, MediaStream } = wrtc;
 
 dotenv.config();
 
@@ -38,8 +39,8 @@ interface AudioConfig {
 }
 
 interface AudioSession {
-    audioSource: InstanceType<typeof wrtc.nonstandard.RTCAudioSource>;
-    audioSink?: InstanceType<typeof wrtc.RTCAudioSink>;  // Optional since we might not have received the track yet
+    audioSource: InstanceType<typeof nonstandard.RTCAudioSource>;
+    audioSink?: InstanceType<typeof nonstandard.RTCAudioSink>;  // Optional since we might not have received the track yet
     bufferQueue: Buffer[];
     isProcessing: boolean;
     twilioWs: WebSocket;
@@ -47,7 +48,7 @@ interface AudioSession {
 }
 
 interface StreamSession {
-    peerConnection: InstanceType<typeof wrtc.RTCPeerConnection>;
+    peerConnection: RTCPeerConnection;
     dataChannel: RTCDataChannel;
     audioTransceiver: RTCRtpTransceiver;
     audioSession: AudioSession;
@@ -224,11 +225,11 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         console.log('Got ephemeral token successfully');
         
         console.log('Creating RTCPeerConnection...');
-        const pc = new wrtc.RTCPeerConnection({
+        const pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
-        const audioSource = new wrtc.nonstandard.RTCAudioSource();
+        const audioSource = new nonstandard.RTCAudioSource();
         const audioTrack = audioSource.createTrack();
         
         const audioTransceiver = pc.addTransceiver(audioTrack, {
@@ -251,37 +252,41 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         pc.ontrack = (event: RTCTrackEvent) => {
             console.log('Received track from OpenAI:', event.track.kind);
             if (event.track.kind === 'audio') {
-                const audioSink = new wrtc.RTCAudioSink(event.track as any);
-                audioSession.audioSink = audioSink;
-                
-                audioSink.ondata = (frame: RTCAudioData) => {
-                    if (!frame.samples || !frame.sampleRate) return;
+                try {
+                    const audioSink = new nonstandard.RTCAudioSink(event.track as any);
+                    audioSession.audioSink = audioSink;
+                    
+                    audioSink.ondata = (frame: RTCAudioData) => {
+                        if (!frame.samples || !frame.sampleRate) return;
 
-                    try {
-                        const convertedAudio = convertAudioFormat(
-                            frame.samples,
-                            { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
-                            TWILIO_AUDIO_CONFIG
-                        );
+                        try {
+                            const convertedAudio = convertAudioFormat(
+                                frame.samples,
+                                { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
+                                TWILIO_AUDIO_CONFIG
+                            );
 
-                        const twilioMessage: TwilioMediaMessage = {
-                            event: 'media',
-                            streamSid: streamSid,
-                            media: {
-                                payload: convertedAudio.toString('base64'),
-                                track: 'outbound',
-                                chunk: audioSession.mediaChunkCounter++,
-                                timestamp: new Date().toISOString()
+                            const twilioMessage: TwilioMediaMessage = {
+                                event: 'media',
+                                streamSid: streamSid,
+                                media: {
+                                    payload: convertedAudio.toString('base64'),
+                                    track: 'outbound',
+                                    chunk: audioSession.mediaChunkCounter++,
+                                    timestamp: new Date().toISOString()
+                                }
+                            };
+
+                            if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
+                                audioSession.twilioWs.send(JSON.stringify(twilioMessage));
                             }
-                        };
-
-                        if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
-                            audioSession.twilioWs.send(JSON.stringify(twilioMessage));
+                        } catch (error) {
+                            console.error('Error sending audio to Twilio:', error);
                         }
-                    } catch (error) {
-                        console.error('Error sending audio to Twilio:', error);
-                    }
-                };
+                    };
+                } catch (error) {
+                    console.error('Error creating audio sink:', error);
+                }
             }
         };
 
@@ -473,7 +478,7 @@ wss.on('connection', async (ws: WebSocket) => {
 
     extWs.on('close', () => {
         console.log('WebSocket connection closed');
-// Clean up any active sessions associated with this connection
+        // Clean up any active sessions associated with this connection
         for (const [streamSid, session] of streamingSessions.entries()) {
             if (session.audioSession.twilioWs === extWs) {
                 if (session.audioSession.audioSink) {
