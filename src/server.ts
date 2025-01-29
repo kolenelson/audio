@@ -105,19 +105,43 @@ app.get('/health', (req, res) => {
 
 // Utility Functions
 async function getEphemeralToken(): Promise<string> {
-    const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            model: "gpt-4o-realtime-preview-2024-12-17",
-            voice: "verse",
-        }),
-    });
-    const data = await response.json() as OpenAIResponse;
-    return data.client_secret.value;
+    try {
+        console.log('Requesting ephemeral token from OpenAI...');
+        const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                model: "gpt-4o-realtime-preview-2024-12-17",
+                voice: "verse",
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('OpenAI API error:', {
+                status: response.status,
+                statusText: response.statusText,
+                error: errorText
+            });
+            throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log('OpenAI response:', JSON.stringify(data, null, 2));
+
+        if (!data || !data.client_secret || !data.client_secret.value) {
+            console.error('Unexpected response format from OpenAI:', data);
+            throw new Error('Invalid response format from OpenAI');
+        }
+
+        return data.client_secret.value;
+    } catch (error) {
+        console.error('Error getting ephemeral token:', error);
+        throw error;
+    }
 }
 
 function convertAudioFormat(
@@ -162,148 +186,64 @@ function resampleAudio(
 }
 
 async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
-    const ephemeralKey = await getEphemeralToken();
-    
-    const pc = new wrtc.RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-
-    const audioSource = new wrtc.nonstandard.RTCAudioSource();
-    const audioTrack = audioSource.createTrack();
-    
-    const audioTransceiver = pc.addTransceiver(audioTrack, {
-        direction: 'sendrecv'
-    });
-
-    const dc = pc.createDataChannel("oai-events", {
-        ordered: true
-    });
-
-    const audioSession: AudioSession = {
-        audioSource,
-        bufferQueue: [],
-        isProcessing: false,
-        twilioWs,
-        mediaChunkCounter: 0
-    };
-
-    // Handle incoming tracks from OpenAI
-    pc.ontrack = (event) => {
-        console.log('Received track from OpenAI:', event.track.kind);
-        if (event.track.kind === 'audio') {
-            const audioSink = new wrtc.RTCAudioSink(event.track as any);
-            audioSession.audioSink = audioSink;
-            
-            audioSink.ondata = (frame: RTCAudioData) => {
-                if (!frame.samples || !frame.sampleRate) return;
-
-                try {
-                    const convertedAudio = convertAudioFormat(
-                        frame.samples,
-                        { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
-                        TWILIO_AUDIO_CONFIG
-                    );
-
-                    const twilioMessage: TwilioMediaMessage = {
-                        event: 'media',
-                        streamSid: streamSid,
-                        media: {
-                            payload: convertedAudio.toString('base64'),
-                            track: 'outbound',
-                            chunk: audioSession.mediaChunkCounter++,
-                            timestamp: new Date().toISOString()
-                        }
-                    };
-
-                    if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
-                        audioSession.twilioWs.send(JSON.stringify(twilioMessage));
-                    }
-                } catch (error) {
-                    console.error('Error sending audio to Twilio:', error);
-                }
-            };
-        }
-    };
-
-    // Set up data channel event handlers
-    dc.onopen = () => {
-        console.log('Data channel opened with OpenAI');
-        // Send initial response.create event
-        const responseCreate = {
-            type: "response.create",
-            response: {
-                modalities: ["text", "audio"],
-                instructions: "You are a helpful AI assistant. Respond verbally to the user's questions."
-            }
-        };
-        dc.send(JSON.stringify(responseCreate));
-    };
-
-    dc.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            console.log('Received OpenAI event:', data);
-            
-            // Handle different event types from OpenAI
-            switch(data.type) {
-                case 'text.created':
-                    console.log('Text response:', data.text);
-                    break;
-                case 'audio.created':
-                    console.log('OpenAI audio started');
-                    break;
-                case 'audio.ended':
-                    console.log('OpenAI audio ended');
-                    break;
-                case 'error':
-                    console.error('OpenAI error:', data.error);
-                    break;
-                case 'response.completed':
-                    console.log('OpenAI response completed');
-                    break;
-                default:
-                    console.log('Unhandled OpenAI event type:', data.type);
-            }
-        } catch (error) {
-            console.error('Error processing OpenAI message:', error);
-        }
-    };
-
-    // Initialize WebRTC connection
-    const offer = await pc.createOffer({
-        offerToReceiveAudio: true
-    });
-    await pc.setLocalDescription(offer);
-
     try {
-        const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
-            method: "POST",
-            body: offer.sdp,
-            headers: {
-                Authorization: `Bearer ${ephemeralKey}`,
-                "Content-Type": "application/sdp"
-            },
+        console.log('Getting ephemeral token...');
+        const ephemeralKey = await getEphemeralToken();
+        console.log('Got ephemeral token successfully');
+        
+        console.log('Creating RTCPeerConnection...');
+        const pc = new wrtc.RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        // ... rest of the function remains the same until the fetch request
 
-        const answer: RTCSessionDescriptionInit = {
-            type: "answer",
-            sdp: await response.text()
-        };
-        
-        await pc.setRemoteDescription(answer);
-        
-        return {
-            peerConnection: pc,
-            dataChannel: dc,
-            audioTransceiver,
-            audioSession
-        };
+        try {
+            console.log('Sending SDP offer to OpenAI...');
+            const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+                method: "POST",
+                body: offer.sdp,
+                headers: {
+                    Authorization: `Bearer ${ephemeralKey}`,
+                    "Content-Type": "application/sdp"
+                },
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('OpenAI SDP error:', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    error: errorText
+                });
+                throw new Error(`OpenAI SDP error: ${response.status} ${response.statusText}`);
+            }
+
+            const sdpAnswer = await response.text();
+            console.log('Received SDP answer from OpenAI');
+
+            const answer: RTCSessionDescriptionInit = {
+                type: "answer",
+                sdp: sdpAnswer
+            };
+            
+            console.log('Setting remote description...');
+            await pc.setRemoteDescription(answer);
+            console.log('Remote description set successfully');
+            
+            return {
+                peerConnection: pc,
+                dataChannel: dc,
+                audioTransceiver,
+                audioSession
+            };
+        } catch (error) {
+            console.error('Error in WebRTC setup:', error);
+            pc.close();
+            throw error;
+        }
     } catch (error) {
-        console.error('Error establishing WebRTC connection:', error);
+        console.error('Error in initializeWebRTC:', error);
         throw error;
     }
 }
