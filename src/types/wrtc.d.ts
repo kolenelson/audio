@@ -25,7 +25,8 @@ declare module 'wrtc' {
         transceiver: RTCRtpTransceiver;
     }
 
-    class RTCPeerConnection implements EventTarget {
+    // Define WrtcPeerConnection instead of RTCPeerConnection
+    class WrtcPeerConnection implements EventTarget {
         constructor(configuration?: RTCConfiguration);
         
         // EventTarget methods
@@ -44,15 +45,15 @@ declare module 'wrtc' {
         close(): void;
         
         // Event handlers
-        onconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        ondatachannel: ((this: RTCPeerConnection, ev: RTCDataChannelEvent) => any) | null;
-        onicecandidate: ((this: RTCPeerConnection, ev: RTCPeerConnectionIceEvent) => any) | null;
-        onicecandidateerror: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        oniceconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        onicegatheringstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        onnegotiationneeded: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        onsignalingstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
-        ontrack: ((this: RTCPeerConnection, ev: RTCTrackEvent) => any) | null;
+        onconnectionstatechange: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        ondatachannel: ((this: WrtcPeerConnection, ev: RTCDataChannelEvent) => any) | null;
+        onicecandidate: ((this: WrtcPeerConnection, ev: RTCPeerConnectionIceEvent) => any) | null;
+        onicecandidateerror: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        oniceconnectionstatechange: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        onicegatheringstatechange: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        onnegotiationneeded: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        onsignalingstatechange: ((this: WrtcPeerConnection, ev: Event) => any) | null;
+        ontrack: ((this: WrtcPeerConnection, ev: RTCTrackEvent) => any) | null;
 
         // Required properties
         canTrickleIceCandidates: boolean | null;
@@ -87,7 +88,7 @@ declare module 'wrtc' {
 
     // Main module exports
     const wrtc: {
-        RTCPeerConnection: typeof RTCPeerConnection;
+        RTCPeerConnection: typeof WrtcPeerConnection;
         MediaStream: typeof MediaStream;
         nonstandard: typeof nonstandard;
     };
