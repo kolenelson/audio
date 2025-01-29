@@ -63,7 +63,7 @@ interface TwilioMediaMessage {
     };
 }
 
-interface OpenAIResponse {
+interface OpenAISessionResponse {
     client_secret: {
         value: string;
     };
@@ -138,7 +138,18 @@ async function getEphemeralToken(): Promise<string> {
         const data = await response.json();
         console.log('OpenAI response:', JSON.stringify(data, null, 2));
 
-        if (!data || !data.client_secret || !data.client_secret.value) {
+        // Type guard function
+        function isOpenAISessionResponse(data: any): data is OpenAISessionResponse {
+            return data 
+                && typeof data === 'object'
+                && 'client_secret' in data
+                && typeof data.client_secret === 'object'
+                && data.client_secret !== null
+                && 'value' in data.client_secret
+                && typeof data.client_secret.value === 'string';
+        }
+
+        if (!isOpenAISessionResponse(data)) {
             console.error('Unexpected response format from OpenAI:', data);
             throw new Error('Invalid response format from OpenAI');
         }
