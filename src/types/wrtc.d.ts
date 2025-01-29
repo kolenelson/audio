@@ -1,15 +1,4 @@
 declare module 'wrtc' {
-    interface WrtcMediaStreamTrack extends MediaStreamTrack {
-        remote: boolean;
-    }
-
-    interface RTCTrackEvent {
-        track: MediaStreamTrack;
-        streams: MediaStream[];
-        receiver: RTCRtpReceiver;
-        transceiver: RTCRtpTransceiver;
-    }
-
     interface RTCAudioData {
         samples: Float32Array;
         sampleRate: number;
@@ -19,38 +8,70 @@ declare module 'wrtc' {
 
     class RTCAudioSource {
         constructor();
-        createTrack(): WrtcMediaStreamTrack;
+        createTrack(): MediaStreamTrack;
         onData(data: RTCAudioData): void;
     }
 
     class RTCAudioSink {
-        constructor(track: WrtcMediaStreamTrack);
+        constructor(track: MediaStreamTrack);
         ondata: (frame: RTCAudioData) => void;
         stop(): void;
     }
 
-    class RTCPeerConnection {
+    interface RTCTrackEvent {
+        track: MediaStreamTrack;
+        streams: MediaStream[];
+        receiver: RTCRtpReceiver;
+        transceiver: RTCRtpTransceiver;
+    }
+
+    class RTCPeerConnection implements RTCPeerConnectionType {
         constructor(configuration?: RTCConfiguration);
         createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
         setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
         setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
-        addTransceiver(trackOrKind: WrtcMediaStreamTrack | string, init?: RTCRtpTransceiverInit): RTCRtpTransceiver;
+        addTransceiver(trackOrKind: MediaStreamTrack | string, init?: RTCRtpTransceiverInit): RTCRtpTransceiver;
         createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel;
         close(): void;
         ontrack?: (event: RTCTrackEvent) => void;
+        
+        // Required RTCPeerConnection properties
+        canTrickleIceCandidates: boolean | null;
+        connectionState: RTCPeerConnectionState;
+        currentLocalDescription: RTCSessionDescription | null;
+        currentRemoteDescription: RTCSessionDescription | null;
+        iceConnectionState: RTCIceConnectionState;
+        iceGatheringState: RTCIceGatheringState;
+        localDescription: RTCSessionDescription | null;
+        pendingLocalDescription: RTCSessionDescription | null;
+        pendingRemoteDescription: RTCSessionDescription | null;
+        remoteDescription: RTCSessionDescription | null;
+        sctp: RTCSctpTransport | null;
+        signalingState: RTCSignalingState;
+        
+        // Required RTCPeerConnection methods
+        addIceCandidate(candidate: RTCIceCandidateInit | RTCIceCandidate): Promise<void>;
+        getConfiguration(): RTCConfiguration;
+        getReceivers(): RTCRtpReceiver[];
+        getSenders(): RTCRtpSender[];
+        getStats(): Promise<RTCStatsReport>;
+        getTransceivers(): RTCRtpTransceiver[];
+        removeTrack(sender: RTCRtpSender): void;
+        restartIce(): void;
+        setConfiguration(configuration: RTCConfiguration): void;
     }
 
     const nonstandard: {
         RTCAudioSource: typeof RTCAudioSource;
+        RTCAudioSink: typeof RTCAudioSink;
     };
 
-    interface Wrtc {
+    // Main module exports
+    const wrtc: {
         RTCPeerConnection: typeof RTCPeerConnection;
-        RTCAudioSink: typeof RTCAudioSink;
-        nonstandard: typeof nonstandard;
         MediaStream: typeof MediaStream;
-    }
+        nonstandard: typeof nonstandard;
+    };
 
-    const wrtc: Wrtc;
     export = wrtc;
 }
