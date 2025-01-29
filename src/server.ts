@@ -21,8 +21,8 @@ interface AudioConfig {
 }
 
 interface AudioSession {
-    audioSource: typeof wrtc.nonstandard.RTCAudioSource;
-    audioSink: typeof wrtc.RTCAudioSink;
+    audioSource: InstanceType<typeof wrtc.nonstandard.RTCAudioSource>;
+    audioSink: InstanceType<typeof wrtc.RTCAudioSink>;
     bufferQueue: Buffer[];
     isProcessing: boolean;
     twilioWs: WebSocket;
@@ -354,7 +354,7 @@ async function processAudioQueue(audioSession: AudioSession) {
                 samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
             }
 
-            audioSession.audioSource.onData({
+            (audioSession.audioSource as any).onData({
                 samples,
                 sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
                 channels: TWILIO_AUDIO_CONFIG.channels,
