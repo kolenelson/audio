@@ -25,7 +25,7 @@ declare module 'wrtc' {
         transceiver: RTCRtpTransceiver;
     }
 
-    class RTCPeerConnection implements RTCPeerConnectionType {
+    class RTCPeerConnection {
         constructor(configuration?: RTCConfiguration);
         createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
         setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
@@ -33,9 +33,19 @@ declare module 'wrtc' {
         addTransceiver(trackOrKind: MediaStreamTrack | string, init?: RTCRtpTransceiverInit): RTCRtpTransceiver;
         createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel;
         close(): void;
-        ontrack?: (event: RTCTrackEvent) => void;
         
-        // Required RTCPeerConnection properties
+        // Event handlers
+        onconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        ondatachannel: ((this: RTCPeerConnection, ev: RTCDataChannelEvent) => any) | null;
+        onicecandidate: ((this: RTCPeerConnection, ev: RTCPeerConnectionIceEvent) => any) | null;
+        onicecandidateerror: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        oniceconnectionstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onicegatheringstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onnegotiationneeded: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        onsignalingstatechange: ((this: RTCPeerConnection, ev: Event) => any) | null;
+        ontrack: ((this: RTCPeerConnection, ev: RTCTrackEvent) => any) | null;
+
+        // Required properties
         canTrickleIceCandidates: boolean | null;
         connectionState: RTCPeerConnectionState;
         currentLocalDescription: RTCSessionDescription | null;
@@ -49,7 +59,7 @@ declare module 'wrtc' {
         sctp: RTCSctpTransport | null;
         signalingState: RTCSignalingState;
         
-        // Required RTCPeerConnection methods
+        // Required methods
         addIceCandidate(candidate: RTCIceCandidateInit | RTCIceCandidate): Promise<void>;
         getConfiguration(): RTCConfiguration;
         getReceivers(): RTCRtpReceiver[];
