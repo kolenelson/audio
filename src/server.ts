@@ -7,6 +7,12 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// Verify required environment variables
+if (!process.env.OPENAI_API_KEY) {
+    console.error('ERROR: OPENAI_API_KEY environment variable is not set');
+    process.exit(1);
+}
+
 // Extend MediaStreamTrack to include the 'remote' property
 interface WrtcMediaStreamTrack extends MediaStreamTrack {
     remote: boolean;
