@@ -13,6 +13,13 @@ interface WrtcMediaStreamTrack extends MediaStreamTrack {
 }
 
 // Interfaces
+interface RTCTrackEvent {
+    track: MediaStreamTrack;
+    streams: MediaStream[];
+    receiver: RTCRtpReceiver;
+    transceiver: RTCRtpTransceiver;
+}
+
 interface ExtendedWebSocket extends WebSocket {
     isAlive: boolean;
 }
