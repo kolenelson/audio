@@ -25,8 +25,17 @@ declare module 'wrtc' {
         transceiver: RTCRtpTransceiver;
     }
 
-    class RTCPeerConnection {
+    class RTCPeerConnection implements EventTarget {
         constructor(configuration?: RTCConfiguration);
+        
+        // EventTarget methods
+        addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
+        removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions): void;
+        dispatchEvent(event: Event): boolean;
+
+        // RTCPeerConnection methods
+        addTrack(track: MediaStreamTrack, ...streams: MediaStream[]): RTCRtpSender;
+        createAnswer(options?: RTCAnswerOptions): Promise<RTCSessionDescriptionInit>;
         createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit>;
         setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
         setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
