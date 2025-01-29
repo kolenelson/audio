@@ -99,7 +99,21 @@ const AUDIO_CONFIG = {
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
-const PORT = process.env.PORT || 3000;
+
+// Port validation and setup
+let PORT: number;
+if (process.env.PORT) {
+    const parsedPort = parseInt(process.env.PORT, 10);
+    if (isNaN(parsedPort) || parsedPort < 0 || parsedPort > 65535) {
+        console.error('ERROR: PORT variable must be integer between 0 and 65535');
+        process.exit(1);
+    }
+    PORT = parsedPort;
+} else {
+    PORT = 3000; // Default port if not specified
+}
+
+console.log(`Using PORT: ${PORT}`);
 
 // Track active sessions
 const streamingSessions = new Map<string, StreamSession>();
