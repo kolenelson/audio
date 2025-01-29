@@ -3,6 +3,13 @@ declare module 'wrtc' {
         remote: boolean;
     }
 
+    interface RTCTrackEvent {
+        track: MediaStreamTrack;
+        streams: MediaStream[];
+        receiver: RTCRtpReceiver;
+        transceiver: RTCRtpTransceiver;
+    }
+
     interface RTCAudioData {
         samples: Float32Array;
         sampleRate: number;
@@ -30,6 +37,7 @@ declare module 'wrtc' {
         addTransceiver(trackOrKind: WrtcMediaStreamTrack | string, init?: RTCRtpTransceiverInit): RTCRtpTransceiver;
         createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel;
         close(): void;
+        ontrack?: (event: RTCTrackEvent) => void;
     }
 
     const nonstandard: {
