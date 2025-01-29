@@ -5,8 +5,6 @@ import fetch from 'node-fetch';
 import wrtc from 'wrtc';
 import dotenv from 'dotenv';
 
-const { RTCPeerConnection, MediaStream, RTCAudioSink, nonstandard } = wrtc;
-
 dotenv.config();
 
 // Interfaces
@@ -30,7 +28,7 @@ interface AudioSession {
 }
 
 interface StreamSession {
-    peerConnection: RTCPeerConnection;
+    peerConnection: InstanceType<typeof wrtc.RTCPeerConnection>;
     dataChannel: RTCDataChannel;
     audioTransceiver: RTCRtpTransceiver;
     audioSession: AudioSession;
@@ -154,14 +152,14 @@ function resampleAudio(
 async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
     const ephemeralKey = await getEphemeralToken();
     
-    const pc = new RTCPeerConnection({
+    const pc = new wrtc.RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
 
     const audioSource = new wrtc.nonstandard.RTCAudioSource();
     const audioTrack = audioSource.createTrack();
     
-    const audioTransceiver = pc.addTransceiver(audioTrack, {
+    const audioTransceiver = pc.addTransceiver(audioTrack as unknown as MediaStreamTrack, {
         direction: 'sendrecv'
     });
 
@@ -169,7 +167,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         ordered: true
     });
 
-    const audioSink = new RTCAudioSink(audioTransceiver.receiver.track);
+    const audioSink = new wrtc.RTCAudioSink(audioTransceiver.receiver.track);
 
     const audioSession: AudioSession = {
         audioSource,
@@ -354,12 +352,14 @@ async function processAudioQueue(audioSession: AudioSession) {
                 samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
             }
 
-            (audioSession.audioSource as any).onData({
+            const audioData: RTCAudioData = {
                 samples,
                 sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
                 channels: TWILIO_AUDIO_CONFIG.channels,
                 timestamp: Date.now()
-            });
+            };
+
+            (audioSession.audioSource as any).onData(audioData);
 
             await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
         }
