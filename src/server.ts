@@ -2,7 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
-import wrtc from 'wrtc';
+import wrtc, { nonstandard } from 'wrtc';
+const { RTCPeerConnection, RTCAudioSink, MediaStream } = wrtc;
 import dotenv from 'dotenv';
 
 dotenv.config();
