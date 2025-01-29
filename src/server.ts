@@ -94,7 +94,7 @@ const WEBRTC_AUDIO_CONFIG: AudioConfig = {
 
 const AUDIO_CONFIG = {
     chunkSize: 160,  // 20ms of 8kHz audio
-    processingInterval: 20,
+    processingInterval: 10,  // Reduced from 20ms to 10ms for smoother processing
     maxQueueSize: 50
 };
 
@@ -176,7 +176,6 @@ async function getEphemeralToken(): Promise<string> {
         throw error;
     }
 }
-
 function convertAudioFormat(
     samples: Float32Array,
     fromConfig: AudioConfig,
@@ -264,29 +263,39 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
                             console.log('Received audio frame from OpenAI:', {
                                 samplesLength: frame.samples.length,
                                 sampleRate: frame.sampleRate,
-                                channels: frame.channels
+                                channels: frame.channels || 1
                             });
 
+                            // Convert from OpenAI's 48kHz to Twilio's 8kHz
                             const convertedAudio = convertAudioFormat(
                                 frame.samples,
                                 { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
                                 TWILIO_AUDIO_CONFIG
                             );
 
-                            const twilioMessage: TwilioMediaMessage = {
-                                event: 'media',
-                                streamSid: streamSid,
-                                media: {
-                                    payload: convertedAudio.toString('base64'),
-                                    track: 'outbound',
-                                    chunk: audioSession.mediaChunkCounter++,
-                                    timestamp: new Date().toISOString()
-                                }
-                            };
+                            // Split converted audio into 160-byte chunks for Twilio
+                            for (let offset = 0; offset < convertedAudio.length; offset += 160) {
+                                const chunk = convertedAudio.slice(offset, Math.min(offset + 160, convertedAudio.length));
+                                if (chunk.length !== 160) continue;  // Skip incomplete chunks
 
-                            if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
-                                audioSession.twilioWs.send(JSON.stringify(twilioMessage));
-                                console.log('Sent audio frame to Twilio, chunk:', audioSession.mediaChunkCounter - 1);
+                                const twilioMessage: TwilioMediaMessage = {
+                                    event: 'media',
+                                    streamSid: streamSid,
+                                    media: {
+                                        payload: chunk.toString('base64'),
+                                        track: 'outbound',
+                                        chunk: audioSession.mediaChunkCounter++,
+                                        timestamp: new Date().toISOString()
+                                    }
+                                };
+
+                                if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
+                                    audioSession.twilioWs.send(JSON.stringify(twilioMessage));
+                                    console.log('Sent audio chunk to Twilio:', {
+                                        chunk: audioSession.mediaChunkCounter - 1,
+                                        size: chunk.length
+                                    });
+                                }
                             }
                         } catch (error) {
                             console.error('Error processing OpenAI audio frame:', error);
@@ -355,8 +364,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
                 console.error('Error processing OpenAI message:', error);
             }
         };
-
-        // Initialize WebRTC connection
+// Initialize WebRTC connection
         console.log('Creating offer...');
         const offer = await pc.createOffer({
             offerToReceiveAudio: true
@@ -536,29 +544,38 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            // Convert to samples
-            const samples = new Float32Array(80);  // 160 bytes / 2 bytes per sample = 80 samples
-            for (let i = 0; i < samples.length; i++) {
-                if (i * 2 + 1 < audioChunk.length) {
-                    samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
-                }
-            }
+            // Process the buffer in chunks of 160 bytes
+            for (let offset = 0; offset < audioChunk.length; offset += 160) {
+                const chunk = audioChunk.slice(offset, Math.min(offset + 160, audioChunk.length));
+                if (chunk.length !== 160) continue; // Skip incomplete chunks
 
-            try {
-                await new Promise(resolve => setTimeout(resolve, 20));
-                audioSession.audioSource.onData({
-                    samples,
-                    sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                    channels: TWILIO_AUDIO_CONFIG.channels,
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.error('Audio chunk error:', {
-                    error: error instanceof Error ? error.message : error,
-                    samplesLength: samples.length * 2,  // in bytes
-                    sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                    channels: TWILIO_AUDIO_CONFIG.channels
-                });
+                const samples = new Float32Array(80); // 160 bytes = 80 16-bit samples
+                for (let i = 0; i < 80; i++) {
+                    samples[i] = chunk.readInt16LE(i * 2) / 32768.0;
+                }
+
+                try {
+                    // Send at 48kHz to match OpenAI's expected rate
+                    const upsampled = resampleAudio(samples, TWILIO_AUDIO_CONFIG.sampleRate, WEBRTC_AUDIO_CONFIG.sampleRate);
+                    
+                    audioSession.audioSource.onData({
+                        samples: upsampled,
+                        sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
+                        channels: 1,
+                        timestamp: Date.now()
+                    });
+
+                    // Add a small delay between chunks to prevent overwhelming the connection
+                    await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
+                } catch (error) {
+                    console.error('Audio chunk error:', {
+                        error: error instanceof Error ? error.message : error,
+                        inputSize: chunk.length,
+                        samplesLength: samples.length,
+                        sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
+                        channels: 1
+                    });
+                }
             }
         }
     } finally {
