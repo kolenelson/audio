@@ -2,10 +2,11 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
-import wrtc, { nonstandard } from 'wrtc';
+import wrtc from 'wrtc';
 import dotenv from 'dotenv';
 
 const { RTCPeerConnection, MediaStream } = wrtc;
+const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
 
 dotenv.config();
 
@@ -39,8 +40,8 @@ interface AudioConfig {
 }
 
 interface AudioSession {
-    audioSource: InstanceType<typeof nonstandard.RTCAudioSource>;
-    audioSink?: InstanceType<typeof nonstandard.RTCAudioSink>;  // Optional since we might not have received the track yet
+    audioSource: InstanceType<typeof RTCAudioSource>;
+    audioSink?: InstanceType<typeof RTCAudioSink>;
     bufferQueue: Buffer[];
     isProcessing: boolean;
     twilioWs: WebSocket;
@@ -229,7 +230,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
-        const audioSource = new nonstandard.RTCAudioSource();
+        const audioSource = new RTCAudioSource();
         const audioTrack = audioSource.createTrack();
         
         const audioTransceiver = pc.addTransceiver(audioTrack, {
@@ -253,7 +254,7 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
             console.log('Received track from OpenAI:', event.track.kind);
             if (event.track.kind === 'audio') {
                 try {
-                    const audioSink = new nonstandard.RTCAudioSink(event.track as any);
+                    const audioSink = new RTCAudioSink(event.track as any);
                     audioSession.audioSink = audioSink;
                     
                     audioSink.ondata = (frame: RTCAudioData) => {
