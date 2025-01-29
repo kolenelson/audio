@@ -494,7 +494,11 @@ wss.on('connection', async (ws: WebSocket) => {
                     break;
             }
         } catch (error) {
-            console.error('Error processing message:', error);
+            if (error instanceof Error) {
+                console.error('Error processing message:', error.message);
+            } else {
+                console.error('Error processing message:', error);
+            }
         }
     });
 
@@ -512,13 +516,14 @@ wss.on('connection', async (ws: WebSocket) => {
         }
     });
 
-extWs.on('error', (error: unknown) => {
+    extWs.on('error', (error: unknown) => {
         if (error instanceof Error) {
             console.error('WebSocket error:', error.message);
         } else {
             console.error('WebSocket error:', error);
         }
     });
+});
 
 // Audio Queue Processing
 async function processAudioQueue(audioSession: AudioSession) {
@@ -549,7 +554,7 @@ async function processAudioQueue(audioSession: AudioSession) {
                 });
             } catch (error) {
                 console.error('Audio chunk error:', {
-                    error: error.message,
+                    error: error instanceof Error ? error.message : error,
                     samplesLength: samples.length * 2,  // in bytes
                     sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
                     channels: TWILIO_AUDIO_CONFIG.channels
