@@ -86,14 +86,14 @@ const TWILIO_AUDIO_CONFIG: AudioConfig = {
 };
 
 const WEBRTC_AUDIO_CONFIG: AudioConfig = {
-    sampleRate: 48000,
+    sampleRate: 48000,  // WebRTC typically expects 48kHz
     channels: 1,
     bitsPerSample: 16
 };
 
 const AUDIO_CONFIG = {
-    chunkSize: 160,  // Changed from 320 to 160
-    processingInterval: 15, // Changed from 20 to 15
+    chunkSize: 160,
+    processingInterval: 20,
     maxQueueSize: 50
 };
 
@@ -510,37 +510,40 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            // Process the buffer in 160-byte chunks
-            const chunksCount = Math.floor(audioChunk.length / 160);
+            // Create a buffer of exactly 160 bytes
+            const samples = new Float32Array(160);  // Create full size Float32Array
             
-            for (let i = 0; i < chunksCount; i++) {
-                const chunk = Buffer.alloc(160);
-                audioChunk.copy(chunk, 0, i * 160, (i + 1) * 160);
-
-                const samples = new Float32Array(80); // 160 bytes = 80 samples for 16-bit audio
-                for (let j = 0; j < 80; j++) {
-                    samples[j] = chunk.readInt16LE(j * 2) / 32768.0;
+            // Fill with normalized audio data
+            for (let i = 0; i < Math.min(audioChunk.length / 2, 160); i++) {
+                if (i * 2 + 1 < audioChunk.length) {
+                    samples[i] = audioChunk.readInt16LE(i * 2) / 32768.0;
+                } else {
+                    samples[i] = 0;  // Pad with silence if needed
                 }
+            }
 
-                const audioData: RTCAudioData = {
-                    samples,
-                    sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                    channels: TWILIO_AUDIO_CONFIG.channels,
-                    timestamp: Date.now()
-                };
+            const audioData: RTCAudioData = {
+                samples,
+                sampleRate: 48000,  // Use WebRTC's expected sample rate
+                channels: 1,
+                timestamp: Date.now()
+            };
 
-                try {
-                    await new Promise(resolve => setTimeout(resolve, 20)); // Wait 20ms between chunks
-                    audioSession.audioSource.onData(audioData);
-                } catch (error) {
-                    console.error('Audio processing error details:', {
-                        chunkSize: chunk.length,
-                        samplesLength: samples.length,
-                        sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-                        channels: TWILIO_AUDIO_CONFIG.channels
-                    });
-                    console.error('Error processing audio chunk:', error);
-                }
+            try {
+                await new Promise(resolve => setTimeout(resolve, 20));
+                console.log('Sending audio chunk:', {
+                    samplesLength: samples.byteLength,
+                    sampleRate: audioData.sampleRate,
+                    channels: audioData.channels
+                });
+                audioSession.audioSource.onData(audioData);
+            } catch (error) {
+                console.error('Audio processing error details:', {
+                    samplesLength: samples.byteLength,
+                    sampleRate: audioData.sampleRate,
+                    channels: audioData.channels,
+                    error: error.message
+                });
             }
         }
     } catch (error) {
