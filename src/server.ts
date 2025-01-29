@@ -304,35 +304,38 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
             dc.send(JSON.stringify(responseCreate));
         };
 
-        dc.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                console.log('Received OpenAI event:', data);
-                
-                // Handle different event types from OpenAI
-                switch(data.type) {
-                    case 'text.created':
-                        console.log('Text response:', data.text);
-                        break;
-                    case 'audio.created':
-                        console.log('OpenAI audio started');
-                        break;
-                    case 'audio.ended':
-                        console.log('OpenAI audio ended');
-                        break;
-                    case 'error':
-                        console.error('OpenAI error:', data.error);
-                        break;
-                    case 'response.completed':
-                        console.log('OpenAI response completed');
-                        break;
-                    default:
-                        console.log('Unhandled OpenAI event type:', data.type);
-                }
-            } catch (error) {
-                console.error('Error processing OpenAI message:', error);
-            }
-        };
+dc.onmessage = (event) => {
+    try {
+        const data = JSON.parse(event.data);
+        console.log('Received OpenAI event:', data);
+        
+        // Handle different event types from OpenAI
+        switch(data.type) {
+            case 'text.created':
+                console.log('Text response:', data.text);
+                break;
+            case 'audio.created':
+                console.log('OpenAI audio started');
+                break;
+            case 'audio.ended':
+                console.log('OpenAI audio ended');
+                break;
+            case 'error':
+                console.error('OpenAI error:', data.error);
+                break;
+            case 'response.completed':
+                console.log('OpenAI response completed');
+                break;
+            case 'response.created':
+                console.log('OpenAI response created:', data.response.id);
+                break;
+            default:
+                console.log('Received event type:', data.type);
+        }
+    } catch (error) {
+        console.error('Error processing OpenAI message:', error);
+    }
+};
 
         // Initialize WebRTC connection
         console.log('Creating offer...');
@@ -507,15 +510,15 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            // Split the buffer into smaller chunks of 160 bytes
-            const chunkSize = 160; // 20ms of 8kHz audio
-            for (let offset = 0; offset < audioChunk.length; offset += chunkSize) {
-                const chunk = audioChunk.slice(offset, offset + chunkSize);
-                if (chunk.length < chunkSize) continue; // Skip incomplete chunks
+            // Create Float32Array with the correct number of samples
+            const numSamples = 80; // 160 bytes = 80 samples (16-bit)
+            const samples = new Float32Array(numSamples);
 
-                const samples = new Float32Array(chunk.length / 2);
-                for (let i = 0; i < samples.length; i++) {
-                    samples[i] = chunk.readInt16LE(i * 2) / 32768.0;
+            // Process each 160-byte chunk
+            for (let offset = 0; offset < audioChunk.length; offset += 160) {
+                // Convert only numSamples worth of data
+                for (let i = 0; i < numSamples && (i * 2 + offset + 1) < audioChunk.length; i++) {
+                    samples[i] = audioChunk.readInt16LE(offset + i * 2) / 32768.0;
                 }
 
                 const audioData: RTCAudioData = {
@@ -527,12 +530,16 @@ async function processAudioQueue(audioSession: AudioSession) {
 
                 try {
                     audioSession.audioSource.onData(audioData);
+                    // Wait a bit before processing next chunk to maintain timing
+                    await new Promise(resolve => setTimeout(resolve, 10));
                 } catch (error) {
+                    console.error('Error details:', {
+                        samplesLength: samples.length,
+                        sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
+                        channels: TWILIO_AUDIO_CONFIG.channels
+                    });
                     console.error('Error processing audio chunk:', error);
                 }
-
-                // Add a small delay between chunks to prevent overwhelming the audio pipeline
-                await new Promise(resolve => setTimeout(resolve, 15)); // 15ms delay
             }
         }
     } catch (error) {
