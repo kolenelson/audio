@@ -510,15 +510,16 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            // Create Float32Array with the correct number of samples
-            const numSamples = 80; // 160 bytes = 80 samples (16-bit)
-            const samples = new Float32Array(numSamples);
+            // Process the buffer in 160-byte chunks
+            const chunksCount = Math.floor(audioChunk.length / 160);
+            
+            for (let i = 0; i < chunksCount; i++) {
+                const chunk = Buffer.alloc(160);
+                audioChunk.copy(chunk, 0, i * 160, (i + 1) * 160);
 
-            // Process each 160-byte chunk
-            for (let offset = 0; offset < audioChunk.length; offset += 160) {
-                // Convert only numSamples worth of data
-                for (let i = 0; i < numSamples && (i * 2 + offset + 1) < audioChunk.length; i++) {
-                    samples[i] = audioChunk.readInt16LE(offset + i * 2) / 32768.0;
+                const samples = new Float32Array(80); // 160 bytes = 80 samples for 16-bit audio
+                for (let j = 0; j < 80; j++) {
+                    samples[j] = chunk.readInt16LE(j * 2) / 32768.0;
                 }
 
                 const audioData: RTCAudioData = {
@@ -529,11 +530,11 @@ async function processAudioQueue(audioSession: AudioSession) {
                 };
 
                 try {
+                    await new Promise(resolve => setTimeout(resolve, 20)); // Wait 20ms between chunks
                     audioSession.audioSource.onData(audioData);
-                    // Wait a bit before processing next chunk to maintain timing
-                    await new Promise(resolve => setTimeout(resolve, 10));
                 } catch (error) {
-                    console.error('Error details:', {
+                    console.error('Audio processing error details:', {
+                        chunkSize: chunk.length,
                         samplesLength: samples.length,
                         sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
                         channels: TWILIO_AUDIO_CONFIG.channels
