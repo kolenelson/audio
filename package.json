@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "WebRTC server for prank calls",
   "main": "dist/server.js",
+  "type": "module",
   "scripts": {
     "dev": "ts-node src/server.ts",
     "build": "tsc",
