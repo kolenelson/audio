@@ -1,4 +1,8 @@
 // WebRTC standard types
+interface RTCSessionDescriptionInit {
+    type: RTCSdpType;
+    sdp: string;
+}
 type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback';
 
 interface RTCDataChannel extends EventTarget {
