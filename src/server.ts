@@ -89,10 +89,13 @@ const MEDIASOUP_SETTINGS = {
     webRtcTransport: {
         listenIps: [
             {
-                ip: '0.0.0.0',
-                announcedIp: process.env.ANNOUNCED_IP || '127.0.0.1'
+                ip: '0.0.0.0',  // Listen on all interfaces
+                announcedIp: null  // Let WebRTC handle NAT traversal
             }
         ],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
         initialAvailableOutgoingBitrate: 800000
     }
 };
