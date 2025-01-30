@@ -1,5 +1,5 @@
 {
-  "name": "KOLEOPENAITWILIO",
+  "name": "openaitwilio",
   "version": "1.0.0",
   "description": "WebRTC server for OpenAI Realtime API",
   "main": "dist/server.js",
