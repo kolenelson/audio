@@ -10,8 +10,8 @@ aptPkgs = [
 [phases.install]
 cmds = [
     "npm install -g @mapbox/node-pre-gyp",
-    "export PATH=/usr/local/bin:$PATH",  # Ensure pip is in PATH
-    "npm ci --only=production"           # Use ci instead of install for cleaner builds
+    "export PATH=/usr/local/bin:$PATH",
+    "npm install --omit=dev"
 ]
 
 [phases.build]
