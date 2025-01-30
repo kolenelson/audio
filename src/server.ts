@@ -1,58 +1,30 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { RTCPeerConnection, MediaStream, nonstandard } from 'wrtc';
 import fetch from 'node-fetch';
-import wrtc from 'wrtc';
 import dotenv from 'dotenv';
 
-const { RTCPeerConnection, MediaStream } = wrtc;
-const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
-
+const { RTCAudioSource, RTCAudioSink } = nonstandard;
 dotenv.config();
 
-// Verify required environment variables
-if (!process.env.OPENAI_API_KEY) {
-    console.error('ERROR: OPENAI_API_KEY environment variable is not set');
-    process.exit(1);
-}
-
-// Extend MediaStreamTrack to include the 'remote' property
-interface WrtcMediaStreamTrack extends MediaStreamTrack {
-    remote: boolean;
-}
-
-// Interfaces
-interface ExtendedWebSocket extends WebSocket {
-    isAlive: boolean;
-}
-
-interface RTCTrackEvent {
-    track: MediaStreamTrack;
-    streams: MediaStream[];
-    receiver: RTCRtpReceiver;
-    transceiver: RTCRtpTransceiver;
-}
-
+// Type definitions
 interface AudioConfig {
     sampleRate: number;
     channels: number;
     bitsPerSample: number;
 }
 
-interface AudioSession {
+interface StreamSession {
+    peerConnection: RTCPeerConnection;
+    dataChannel: RTCDataChannel;
     audioSource: InstanceType<typeof RTCAudioSource>;
     audioSink?: InstanceType<typeof RTCAudioSink>;
-    bufferQueue: Buffer[];
-    isProcessing: boolean;
     twilioWs: WebSocket;
+    streamSid: string;
+    audioBuffer: Buffer[];
+    isProcessing: boolean;
     mediaChunkCounter: number;
-}
-
-interface StreamSession {
-    peerConnection: InstanceType<typeof RTCPeerConnection>;
-    dataChannel: RTCDataChannel;
-    audioTransceiver: RTCRtpTransceiver;
-    audioSession: AudioSession;
 }
 
 interface TwilioMediaMessage {
@@ -66,70 +38,37 @@ interface TwilioMediaMessage {
     };
 }
 
-interface OpenAISessionResponse {
-    client_secret: {
-        value: string;
-    };
-}
-
-interface RTCAudioData {
-    samples: Float32Array;
-    sampleRate: number;
-    channels?: number;
-    timestamp?: number;
-}
-
-// Constants
+// Audio configurations
 const TWILIO_AUDIO_CONFIG: AudioConfig = {
     sampleRate: 8000,
     channels: 1,
     bitsPerSample: 16
 };
 
-const WEBRTC_AUDIO_CONFIG: AudioConfig = {
-    sampleRate: 48000,  // OpenAI is using 48kHz
+const OPENAI_AUDIO_CONFIG: AudioConfig = {
+    sampleRate: 24000,  // OpenAI expects 24kHz
     channels: 1,
     bitsPerSample: 16
 };
 
 const AUDIO_CONFIG = {
-    chunkSize: 160,  // Twilio's chunk size
-    processingInterval: 10,
-    maxQueueSize: 50
+    twilioChunkSize: 160,  // Twilio's chunk size (8kHz * 0.02s)
+    openaiChunkSize: 480,  // OpenAI's chunk size (24kHz * 0.02s)
+    processingInterval: 20  // 20ms chunks
 };
 
 // Server setup
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
+const PORT = process.env.PORT || 3000;
 
-// Port validation and setup
-let PORT: number;
-if (process.env.PORT) {
-    const parsedPort = parseInt(process.env.PORT, 10);
-    if (isNaN(parsedPort) || parsedPort < 0 || parsedPort > 65535) {
-        console.error('ERROR: PORT variable must be integer between 0 and 65535');
-        process.exit(1);
-    }
-    PORT = parsedPort;
-} else {
-    PORT = 3000;
-}
-
-console.log(`Using PORT: ${PORT}`);
-
-// Track active sessions
-const streamingSessions = new Map<string, StreamSession>();
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ status: 'healthy' });
-});
+// Session management
+const sessions = new Map<string, StreamSession>();
 
 // Utility Functions
 async function getEphemeralToken(): Promise<string> {
     try {
-        console.log('Requesting ephemeral token from OpenAI...');
         const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
             method: "POST",
             headers: {
@@ -138,38 +77,16 @@ async function getEphemeralToken(): Promise<string> {
             },
             body: JSON.stringify({
                 model: "gpt-4o-realtime-preview-2024-12-17",
-                voice: "verse",
+                voice: "alloy",
+                modalities: ["audio", "text"]
             }),
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('OpenAI API error:', {
-                status: response.status,
-                statusText: response.statusText,
-                error: errorText
-            });
             throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
         }
 
         const data = await response.json();
-        console.log('OpenAI response:', JSON.stringify(data, null, 2));
-
-        function isOpenAISessionResponse(data: any): data is OpenAISessionResponse {
-            return data 
-                && typeof data === 'object'
-                && 'client_secret' in data
-                && typeof data.client_secret === 'object'
-                && data.client_secret !== null
-                && 'value' in data.client_secret
-                && typeof data.client_secret.value === 'string';
-        }
-
-        if (!isOpenAISessionResponse(data)) {
-            console.error('Unexpected response format from OpenAI:', data);
-            throw new Error('Invalid response format from OpenAI');
-        }
-
         return data.client_secret.value;
     } catch (error) {
         console.error('Error getting ephemeral token:', error);
@@ -177,141 +94,77 @@ async function getEphemeralToken(): Promise<string> {
     }
 }
 
-function convertAudioFormat(
-    samples: Float32Array,
-    fromConfig: AudioConfig,
-    toConfig: AudioConfig
-): Buffer {
-    const resampledData = resampleAudio(samples, fromConfig.sampleRate, toConfig.sampleRate);
-    const buffer = Buffer.alloc(resampledData.length * (toConfig.bitsPerSample / 8));
-    
-    for (let i = 0; i < resampledData.length; i++) {
-        const sample = Math.max(-1, Math.min(1, resampledData[i]));
-        const value = Math.floor(sample * ((1 << (toConfig.bitsPerSample - 1)) - 1));
-        if (toConfig.bitsPerSample === 16) {
-            buffer.writeInt16LE(value, i * 2);
-        }
+function resampleAudio(input: Buffer, fromRate: number, toRate: number): Buffer {
+    // Convert input buffer to Float32Array
+    const inputArray = new Float32Array(input.length / 2);
+    for (let i = 0; i < inputArray.length; i++) {
+        inputArray[i] = input.readInt16LE(i * 2) / 32768.0;
     }
-    return buffer;
-}
 
-function resampleAudio(
-    samples: Float32Array,
-    fromRate: number,
-    toRate: number
-): Float32Array {
+    // Calculate resampling parameters
     const ratio = fromRate / toRate;
-    const newLength = Math.floor(samples.length / ratio);
-    const result = new Float32Array(newLength);
+    const outputLength = Math.floor(inputArray.length * (toRate / fromRate));
+    const output = new Float32Array(outputLength);
 
-    for (let i = 0; i < newLength; i++) {
-        const pos = i * ratio;
-        const index = Math.floor(pos);
-        const fraction = pos - index;
+    // Perform linear interpolation resampling
+    for (let i = 0; i < outputLength; i++) {
+        const position = i * ratio;
+        const index = Math.floor(position);
+        const fraction = position - index;
 
-        if (index + 1 < samples.length) {
-            result[i] = samples[index] * (1 - fraction) + samples[index + 1] * fraction;
+        if (index + 1 < inputArray.length) {
+            output[i] = inputArray[index] * (1 - fraction) + 
+                       inputArray[index + 1] * fraction;
         } else {
-            result[i] = samples[index];
+            output[i] = inputArray[index];
         }
     }
-    return result;
+
+    // Convert back to 16-bit PCM
+    const outputBuffer = Buffer.alloc(output.length * 2);
+    for (let i = 0; i < output.length; i++) {
+        const sample = Math.max(-1, Math.min(1, output[i]));
+        outputBuffer.writeInt16LE(Math.round(sample * 32767), i * 2);
+    }
+
+    return outputBuffer;
 }
 
 async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
     try {
-        console.log('Getting ephemeral token...');
         const ephemeralKey = await getEphemeralToken();
-        console.log('Got ephemeral token successfully');
         
-        console.log('Creating RTCPeerConnection...');
+        // Create peer connection
         const pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
+        // Set up audio source for sending audio to OpenAI
         const audioSource = new RTCAudioSource();
         const audioTrack = audioSource.createTrack();
-        
-        const audioTransceiver = pc.addTransceiver(audioTrack, {
-            direction: 'sendrecv'
-        });
+        pc.addTrack(audioTrack);
 
+        // Create data channel for events
         const dc = pc.createDataChannel("oai-events", {
             ordered: true
         });
 
-        const audioSession: AudioSession = {
+        // Create session object
+        const session: StreamSession = {
+            peerConnection: pc,
+            dataChannel: dc,
             audioSource,
-            bufferQueue: [],
-            isProcessing: false,
             twilioWs,
+            streamSid,
+            audioBuffer: [],
+            isProcessing: false,
             mediaChunkCounter: 0
         };
 
-        // Handle incoming tracks from OpenAI
-        pc.ontrack = (event: RTCTrackEvent) => {
-            console.log('Received track from OpenAI:', event.track.kind);
-            if (event.track.kind === 'audio') {
-                try {
-                    console.log('Creating audio sink for OpenAI track');
-                    const audioSink = new RTCAudioSink(event.track);
-                    audioSession.audioSink = audioSink;
-                    
-                    audioSink.ondata = (frame: RTCAudioData) => {
-                        if (!frame.samples || !frame.sampleRate) return;
-
-                        try {
-                            console.log('Received audio frame from OpenAI:', {
-                                samplesLength: frame.samples.length,
-                                sampleRate: frame.sampleRate,
-                                channels: frame.channels || 1
-                            });
-
-                            // Convert from OpenAI's 16kHz to Twilio's 8kHz
-                            const convertedAudio = convertAudioFormat(
-                                frame.samples,
-                                { sampleRate: frame.sampleRate, channels: frame.channels || 1, bitsPerSample: 16 },
-                                TWILIO_AUDIO_CONFIG
-                            );
-
-                            // Split into 160-byte chunks for Twilio
-                            for (let offset = 0; offset < convertedAudio.length; offset += 160) {
-                                const chunk = convertedAudio.slice(offset, Math.min(offset + 160, convertedAudio.length));
-                                if (chunk.length !== 160) continue;  // Skip incomplete chunks
-
-                                const twilioMessage: TwilioMediaMessage = {
-                                    event: 'media',
-                                    streamSid: streamSid,
-                                    media: {
-                                        payload: chunk.toString('base64'),
-                                        track: 'outbound',
-                                        chunk: audioSession.mediaChunkCounter++,
-                                        timestamp: new Date().toISOString()
-                                    }
-                                };
-
-                                if (audioSession.twilioWs.readyState === WebSocket.OPEN) {
-                                    audioSession.twilioWs.send(JSON.stringify(twilioMessage));
-                                    console.log('Sent audio chunk to Twilio:', {
-                                        chunk: audioSession.mediaChunkCounter - 1,
-                                        size: chunk.length
-                                    });
-                                }
-                            }
-                        } catch (error) {
-                            console.error('Error processing OpenAI audio frame:', error);
-                        }
-                    };
-                } catch (error) {
-                    console.error('Error creating audio sink:', error);
-                }
-            }
-        };
-
-        // Set up data channel event handlers
+        // Set up data channel handlers
         dc.onopen = () => {
             console.log('Data channel opened with OpenAI');
-            // Send initial response.create event
+            // Send initial configuration
             const responseCreate = {
                 type: "response.create",
                 response: {
@@ -320,141 +173,157 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
                 }
             };
             dc.send(JSON.stringify(responseCreate));
-            console.log('Sent response.create event');
         };
 
-        dc.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                console.log('Received OpenAI event:', data);
+        dc.onmessage = (event) => handleOpenAIMessage(JSON.parse(event.data), session);
+
+        // Handle incoming audio from OpenAI
+        pc.ontrack = (event) => {
+            if (event.track.kind === 'audio') {
+                console.log('Received audio track from OpenAI');
+                const audioSink = new RTCAudioSink(event.track);
+                session.audioSink = audioSink;
                 
-                switch(data.type) {
-                    case 'text.created':
-                        console.log('Text response:', data.text);
-                        break;
-                    case 'audio.created':
-                        console.log('OpenAI audio started');
-                        break;
-                    case 'audio.ended':
-                        console.log('OpenAI audio ended');
-                        break;
-                    case 'response.audio.done':
-                        console.log('OpenAI audio message complete');
-                        break;
-                    case 'response.audio_transcript.done':
-                        console.log('Transcript:', data.transcript);
-                        break;
-                    case 'response.content_part.done':
-                        if (data.part?.transcript) {
-                            console.log('Content part transcript:', data.part.transcript);
-                        }
-                        break;
-                    case 'error':
-                        console.error('OpenAI error:', data.error);
-                        break;
-                    case 'response.created':
-                        console.log('New response created:', data.response.id);
-                        break;
-                    case 'response.completed':
-                        console.log('Response completed');
-                        break;
-                    default:
-                        console.log('Received event type:', data.type);
-                }
-            } catch (error) {
-                console.error('Error processing OpenAI message:', error);
+                audioSink.ondata = (frame) => {
+                    if (!frame.samples || !frame.sampleRate) return;
+                    handleOpenAIAudio(frame, session);
+                };
             }
         };
 
-        // Initialize WebRTC connection
-        console.log('Creating offer...');
-        const offer = await pc.createOffer({
-            offerToReceiveAudio: true
-        });
-        console.log('Setting local description...');
+        // Create and send offer
+        const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        try {
-            console.log('Sending SDP offer to OpenAI...');
-            const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+        const response = await fetch(
+            `https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`,
+            {
                 method: "POST",
                 body: offer.sdp,
                 headers: {
                     Authorization: `Bearer ${ephemeralKey}`,
                     "Content-Type": "application/sdp"
                 },
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error('OpenAI SDP error:', {
-                    status: response.status,
-                    statusText: response.statusText,
-                    error: errorText
-                });
-                throw new Error(`OpenAI SDP error: ${response.status} ${response.statusText}`);
             }
+        );
 
-            const sdpAnswer = await response.text();
-            console.log('Received SDP answer from OpenAI');
-
-            const answer: RTCSessionDescriptionInit = {
-                type: "answer",
-                sdp: sdpAnswer
-            };
-            
-            console.log('Setting remote description...');
-            await pc.setRemoteDescription(answer);
-            console.log('Remote description set successfully');
-            
-            return {
-                peerConnection: pc,
-                dataChannel: dc,
-                audioTransceiver,
-                audioSession
-            };
-        } catch (error) {
-            console.error('Error in WebRTC setup:', error);
-            pc.close();
-            throw error;
+        if (!response.ok) {
+            throw new Error(`OpenAI SDP error: ${response.status} ${response.statusText}`);
         }
+
+        const sdpAnswer = await response.text();
+        await pc.setRemoteDescription({
+            type: "answer",
+            sdp: sdpAnswer
+        });
+
+        sessions.set(streamSid, session);
+        return session;
+
     } catch (error) {
-        console.error('Error in initializeWebRTC:', error);
+        console.error('Error initializing WebRTC:', error);
         throw error;
     }
 }
 
-// WebSocket Connection Handler
-wss.on('connection', async (ws: WebSocket) => {
-    const extWs = ws as ExtendedWebSocket;
-    console.log('New WebSocket connection established');
-
-    extWs.isAlive = true;
-    extWs.on('pong', () => {
-        extWs.isAlive = true;
-    });
-
-    extWs.on('message', async (message: string) => {
-        try {
-            const data = JSON.parse(message) as {
-                event?: string;
-                type?: string;
-                streamSid?: string;
-                media?: {
-                    payload: string;
-                };
-            };
+function handleOpenAIMessage(message: any, session: StreamSession) {
+    console.log('Received OpenAI message:', message.type);
+    
+    switch (message.type) {
+        case 'response.created':
+            console.log('Response created:', message.response?.id);
+            break;
             
-            console.log('Received message event:', data.event || data.type);
+        case 'response.text.delta':
+            console.log('Text delta:', message.delta);
+            break;
+            
+        case 'response.audio_transcript.delta':
+            console.log('Transcript delta:', message.delta);
+            break;
+            
+        case 'response.done':
+            console.log('Response completed');
+            break;
+            
+        case 'error':
+            console.error('OpenAI error:', message.error);
+            break;
+    }
+}
 
-            switch (data.event || data.type) {
+function handleOpenAIAudio(frame: { samples: Float32Array; sampleRate: number }, session: StreamSession) {
+    try {
+        // Convert from OpenAI's format to Twilio's format
+        const convertedAudio = resampleAudio(
+            Buffer.from(frame.samples.buffer),
+            frame.sampleRate,
+            TWILIO_AUDIO_CONFIG.sampleRate
+        );
+
+        // Split into Twilio-sized chunks
+        for (let offset = 0; offset < convertedAudio.length; offset += AUDIO_CONFIG.twilioChunkSize) {
+            const chunk = convertedAudio.slice(
+                offset,
+                Math.min(offset + AUDIO_CONFIG.twilioChunkSize, convertedAudio.length)
+            );
+
+            if (chunk.length === AUDIO_CONFIG.twilioChunkSize) {
+                const message: TwilioMediaMessage = {
+                    event: 'media',
+                    streamSid: session.streamSid,
+                    media: {
+                        payload: chunk.toString('base64'),
+                        track: 'outbound',
+                        chunk: session.mediaChunkCounter++,
+                        timestamp: new Date().toISOString()
+                    }
+                };
+
+                if (session.twilioWs.readyState === WebSocket.OPEN) {
+                    session.twilioWs.send(JSON.stringify(message));
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error handling OpenAI audio:', error);
+    }
+}
+
+async function processTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
+    try {
+        // Convert from Twilio's format to OpenAI's format
+        const convertedAudio = resampleAudio(
+            audioBuffer,
+            TWILIO_AUDIO_CONFIG.sampleRate,
+            OPENAI_AUDIO_CONFIG.sampleRate
+        );
+
+        // Send to OpenAI
+        session.audioSource.onData({
+            samples: new Float32Array(convertedAudio.buffer),
+            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
+            channels: 1,
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        console.error('Error processing Twilio audio:', error);
+    }
+}
+
+// WebSocket server handler
+wss.on('connection', (ws: WebSocket) => {
+    console.log('New Twilio connection established');
+
+    ws.on('message', async (message: string) => {
+        try {
+            const data = JSON.parse(message);
+            
+            switch (data.event) {
                 case 'start':
                     if (data.streamSid) {
-                        console.log('Starting new stream session:', data.streamSid);
-                        const session = await initializeWebRTC(data.streamSid, extWs);
-                        streamingSessions.set(data.streamSid, session);
-
-                        extWs.send(JSON.stringify({
+                        await initializeWebRTC(data.streamSid, ws);
+                        ws.send(JSON.stringify({
                             event: 'mark',
                             streamSid: data.streamSid,
                             mark: { name: 'connected' }
@@ -464,37 +333,25 @@ wss.on('connection', async (ws: WebSocket) => {
 
                 case 'media':
                     if (data.streamSid && data.media?.payload) {
-                        const session = streamingSessions.get(data.streamSid);
-                        if (session?.audioSession) {
+                        const session = sessions.get(data.streamSid);
+                        if (session) {
                             const audioBuffer = Buffer.from(data.media.payload, 'base64');
-                            session.audioSession.bufferQueue.push(audioBuffer);
-
-                            if (session.audioSession.bufferQueue.length > AUDIO_CONFIG.maxQueueSize) {
-                                session.audioSession.bufferQueue = 
-                                    session.audioSession.bufferQueue.slice(-AUDIO_CONFIG.maxQueueSize);
-                            }
-
-                            if (!session.audioSession.isProcessing) {
-                                Queue(session.audioSession);
-                            }
+                            await processTwilioAudio(session, audioBuffer);
                         }
                     }
                     break;
 
                 case 'stop':
                     if (data.streamSid) {
-                        console.log('Stopping stream session:', data.streamSid);
-                        const session = streamingSessions.get(data.streamSid);
+                        const session = sessions.get(data.streamSid);
                         if (session) {
-                            session.audioSession.bufferQueue = [];
-                            session.audioSession.isProcessing = false;
-                            if (session.audioSession.audioSink) {
-                                session.audioSession.audioSink.stop();
+                            if (session.audioSink) {
+                                session.audioSink.stop();
                             }
                             session.peerConnection.close();
-                            streamingSessions.delete(data.streamSid);
-
-                            extWs.send(JSON.stringify({
+                            sessions.delete(data.streamSid);
+                            
+                            ws.send(JSON.stringify({
                                 event: 'mark',
                                 streamSid: data.streamSid,
                                 mark: { name: 'disconnected' }
@@ -504,133 +361,28 @@ wss.on('connection', async (ws: WebSocket) => {
                     break;
             }
         } catch (error) {
-            if (error instanceof Error) {
-                console.error('Error processing message:', error.message);
-            } else {
-                console.error('Error processing message:', error);
-            }
+            console.error('Error processing Twilio message:', error);
         }
     });
 
-    extWs.on('close', () => {
-        console.log('WebSocket connection closed');
-        // Clean up any active sessions associated with this connection
-        for (const [streamSid, session] of streamingSessions.entries()) {
-            if (session.audioSession.twilioWs === extWs) {
-                if (session.audioSession.audioSink) {
-                    session.audioSession.audioSink.stop();
+    ws.on('close', () => {
+        console.log('Twilio connection closed');
+        // Clean up associated sessions
+        for (const [streamSid, session] of sessions.entries()) {
+            if (session.twilioWs === ws) {
+                if (session.audioSink) {
+                    session.audioSink.stop();
                 }
                 session.peerConnection.close();
-                streamingSessions.delete(streamSid);
+                sessions.delete(streamSid);
             }
-        }
-    });
-
-    extWs.on('error', (error: unknown) => {
-        if (error instanceof Error) {
-            console.error('WebSocket error:', error.message);
-        } else {
-            console.error('WebSocket error:', error);
         }
     });
 });
 
-// Audio Queue Processing
-async function processAudioQueue(audioSession: AudioSession) {
-    if (audioSession.isProcessing || audioSession.bufferQueue.length === 0) return;
-
-    audioSession.isProcessing = true;
-
-    try {
-        while (audioSession.bufferQueue.length > 0) {
-            const audioChunk = audioSession.bufferQueue.shift();
-            if (!audioChunk) continue;
-
-            // Process in 320-byte chunks as expected by OpenAI
-            const REQUIRED_CHUNK_SIZE = 320;
-            const chunks: Buffer[] = [];
-            let totalLength = 0;
-
-            // Add current chunk to collection
-            chunks.push(audioChunk);
-            totalLength += audioChunk.length;
-
-            // If we need more data to make a complete chunk, wait for the next chunk
-            if (totalLength < REQUIRED_CHUNK_SIZE) {
-                const nextChunk = audioSession.bufferQueue.shift();
-                if (nextChunk) {
-                    chunks.push(nextChunk);
-                    totalLength += nextChunk.length;
-                }
-            }
-
-            // Combine chunks
-            const combinedBuffer = Buffer.concat(chunks);
-            
-            // Convert to samples
-            const samples = new Float32Array(combinedBuffer.length / 2);
-            for (let i = 0; i < samples.length; i++) {
-                samples[i] = combinedBuffer.readInt16LE(i * 2) / 32768.0;
-            }
-
-            try {
-                // First upsample from 8kHz to 48kHz
-                const upsampled = resampleAudio(samples, TWILIO_AUDIO_CONFIG.sampleRate, WEBRTC_AUDIO_CONFIG.sampleRate);
-                
-                // Send to OpenAI
-                audioSession.audioSource.onData({
-                    samples: upsampled,
-                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
-                    channels: 1,
-                    timestamp: Date.now()
-                });
-
-                console.log('Sent audio to OpenAI:', {
-                    originalSize: combinedBuffer.length,
-                    upsampledLength: upsampled.length,
-                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
-                    channels: 1
-                });
-
-                await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
-            } catch (error) {
-                console.error('Audio chunk error:', {
-                    error: error instanceof Error ? error.message : error,
-                    inputSize: combinedBuffer.length,
-                    samplesLength: samples.length,
-                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
-                    channels: 1,
-                    chunks: chunks.length,
-                    totalLength
-                });
-            }
-        }
-    } finally {
-        audioSession.isProcessing = false;
-    }
-}
-
-// Keep-alive interval
-const interval = setInterval(() => {
-    wss.clients.forEach((ws: WebSocket) => {
-        const extWs = ws as ExtendedWebSocket;
-        if (extWs.isAlive === false) return extWs.terminate();
-        extWs.isAlive = false;
-        extWs.ping();
-    });
-}, 30000);
-
-// Cleanup on server close
-wss.on('close', () => {
-    clearInterval(interval);
-    // Clean up all active sessions
-    for (const session of streamingSessions.values()) {
-        if (session.audioSession.audioSink) {
-            session.audioSession.audioSink.stop();
-        }
-        session.peerConnection.close();
-    }
-    streamingSessions.clear();
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'healthy' });
 });
 
 // Start server
