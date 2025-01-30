@@ -38,6 +38,13 @@ interface TwilioMediaMessage {
     };
 }
 
+interface OpenAISessionResponse {
+    client_secret: {
+        value: string;
+        expires_at: number;
+    };
+}
+
 // Audio configurations
 const TWILIO_AUDIO_CONFIG: AudioConfig = {
     sampleRate: 8000,
@@ -86,7 +93,25 @@ async function getEphemeralToken(): Promise<string> {
             throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
         }
 
-        const data = await response.json();
+        const data: unknown = await response.json();
+        
+        // Type guard to verify the response shape
+        function isOpenAISessionResponse(data: unknown): data is OpenAISessionResponse {
+            return (
+                typeof data === 'object' && 
+                data !== null && 
+                'client_secret' in data &&
+                typeof (data as any).client_secret === 'object' &&
+                (data as any).client_secret !== null &&
+                'value' in (data as any).client_secret &&
+                typeof (data as any).client_secret.value === 'string'
+            );
+        }
+
+        if (!isOpenAISessionResponse(data)) {
+            throw new Error('Invalid response format from OpenAI');
+        }
+
         return data.client_secret.value;
     } catch (error) {
         console.error('Error getting ephemeral token:', error);
