@@ -13,7 +13,7 @@
     "express": "^4.18.2",
     "ws": "^8.13.0",
     "wrtc": "^0.4.7",
-    "node-fetch": "^3.3.0",  // Note: Using v3 for ES modules
+    "node-fetch": "^3.3.0",
     "dotenv": "^16.0.3"
   },
   "devDependencies": {
