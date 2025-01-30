@@ -4,15 +4,14 @@ aptPkgs = [
     "python3-pip",
     "make",
     "g++",
-    "gcc",
-    "node-pre-gyp"
+    "gcc"
 ]
 
 [phases.install]
 cmds = [
-    "python3 -m pip install --upgrade pip",
-    "npm install -g node-pre-gyp",
-    "npm install"
+    "npm install -g @mapbox/node-pre-gyp",
+    "export PATH=/usr/local/bin:$PATH",  # Ensure pip is in PATH
+    "npm ci --only=production"           # Use ci instead of install for cleaner builds
 ]
 
 [phases.build]
