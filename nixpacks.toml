@@ -1,0 +1,22 @@
+[phases.setup]
+aptPkgs = [
+    "python3",
+    "python3-pip",
+    "make",
+    "g++",
+    "gcc",
+    "node-pre-gyp"
+]
+
+[phases.install]
+cmds = [
+    "python3 -m pip install --upgrade pip",
+    "npm install -g node-pre-gyp",
+    "npm install"
+]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"
