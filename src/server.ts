@@ -7,6 +7,13 @@ import fetch from 'node-fetch';
 const { RTCPeerConnection, MediaStream } = wrtc;
 const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
 
+// Type declarations for WebRTC
+declare global {
+    type MediaStreamTrack = any;
+    type RTCRtpReceiver = any;
+    type RTCRtpTransceiver = any;
+}
+
 // Type definitions
 interface AudioConfig {
     sampleRate: number;
@@ -16,7 +23,7 @@ interface AudioConfig {
 
 interface RTCTrackEvent {
     track: MediaStreamTrack;
-    streams: MediaStream[];
+    streams: Array<InstanceType<typeof MediaStream>>;
     receiver: RTCRtpReceiver;
     transceiver: RTCRtpTransceiver;
 }
