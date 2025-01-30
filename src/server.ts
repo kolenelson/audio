@@ -87,14 +87,13 @@ const TWILIO_AUDIO_CONFIG: AudioConfig = {
 };
 
 const WEBRTC_AUDIO_CONFIG: AudioConfig = {
-    sampleRate: 16000,  // OpenAI expects 16kHz
+    sampleRate: 48000,  // OpenAI is using 48kHz
     channels: 1,
     bitsPerSample: 16
 };
 
 const AUDIO_CONFIG = {
     chunkSize: 160,  // Twilio's chunk size
-    requiredChunkSize: 960,  // OpenAI's expected chunk size
     processingInterval: 10,
     maxQueueSize: 50
 };
@@ -476,7 +475,7 @@ wss.on('connection', async (ws: WebSocket) => {
                             }
 
                             if (!session.audioSession.isProcessing) {
-                                processAudioQueue(session.audioSession);
+                                Queue(session.audioSession);
                             }
                         }
                     }
@@ -547,38 +546,63 @@ async function processAudioQueue(audioSession: AudioSession) {
             const audioChunk = audioSession.bufferQueue.shift();
             if (!audioChunk) continue;
 
-            // Process the buffer in chunks of 160 bytes
-            for (let offset = 0; offset < audioChunk.length; offset += 160) {
-                const chunk = audioChunk.slice(offset, Math.min(offset + 160, audioChunk.length));
-                if (chunk.length !== 160) continue; // Skip incomplete chunks
+            // Process in 320-byte chunks as expected by OpenAI
+            const REQUIRED_CHUNK_SIZE = 320;
+            const chunks: Buffer[] = [];
+            let totalLength = 0;
 
-                const samples = new Float32Array(80); // 160 bytes = 80 16-bit samples
-                for (let i = 0; i < 80; i++) {
-                    samples[i] = chunk.readInt16LE(i * 2) / 32768.0;
+            // Add current chunk to collection
+            chunks.push(audioChunk);
+            totalLength += audioChunk.length;
+
+            // If we need more data to make a complete chunk, wait for the next chunk
+            if (totalLength < REQUIRED_CHUNK_SIZE) {
+                const nextChunk = audioSession.bufferQueue.shift();
+                if (nextChunk) {
+                    chunks.push(nextChunk);
+                    totalLength += nextChunk.length;
                 }
+            }
 
-                try {
-                    // Send at 48kHz to match OpenAI's expected rate
-                    const upsampled = resampleAudio(samples, TWILIO_AUDIO_CONFIG.sampleRate, WEBRTC_AUDIO_CONFIG.sampleRate);
-                    
-                    audioSession.audioSource.onData({
-                        samples: upsampled,
-                        sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
-                        channels: 1,
-                        timestamp: Date.now()
-                    });
+            // Combine chunks
+            const combinedBuffer = Buffer.concat(chunks);
+            
+            // Convert to samples
+            const samples = new Float32Array(combinedBuffer.length / 2);
+            for (let i = 0; i < samples.length; i++) {
+                samples[i] = combinedBuffer.readInt16LE(i * 2) / 32768.0;
+            }
 
-                    // Add a small delay between chunks to prevent overwhelming the connection
-                    await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
-                } catch (error) {
-                    console.error('Audio chunk error:', {
-                        error: error instanceof Error ? error.message : error,
-                        inputSize: chunk.length,
-                        samplesLength: samples.length,
-                        sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
-                        channels: 1
-                    });
-                }
+            try {
+                // First upsample from 8kHz to 48kHz
+                const upsampled = resampleAudio(samples, TWILIO_AUDIO_CONFIG.sampleRate, WEBRTC_AUDIO_CONFIG.sampleRate);
+                
+                // Send to OpenAI
+                audioSession.audioSource.onData({
+                    samples: upsampled,
+                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
+                    channels: 1,
+                    timestamp: Date.now()
+                });
+
+                console.log('Sent audio to OpenAI:', {
+                    originalSize: combinedBuffer.length,
+                    upsampledLength: upsampled.length,
+                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
+                    channels: 1
+                });
+
+                await new Promise(resolve => setTimeout(resolve, AUDIO_CONFIG.processingInterval));
+            } catch (error) {
+                console.error('Audio chunk error:', {
+                    error: error instanceof Error ? error.message : error,
+                    inputSize: combinedBuffer.length,
+                    samplesLength: samples.length,
+                    sampleRate: WEBRTC_AUDIO_CONFIG.sampleRate,
+                    channels: 1,
+                    chunks: chunks.length,
+                    totalLength
+                });
             }
         }
     } finally {
