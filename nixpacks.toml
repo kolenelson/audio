@@ -1,0 +1,16 @@
+[phases.setup]
+aptPkgs = [
+    "python3",
+    "make",
+    "g++",
+    "node-pre-gyp"
+]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"
