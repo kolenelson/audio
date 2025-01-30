@@ -15,8 +15,8 @@ interface AudioConfig {
 }
 
 interface StreamSession {
-    peerConnection: typeof RTCPeerConnection;
-    dataChannel: any; // Using any for RTCDataChannel as it's not exported by wrtc
+    peerConnection: InstanceType<typeof RTCPeerConnection>;  // Changed this line
+    dataChannel: any;
     audioSource: InstanceType<typeof RTCAudioSource>;
     audioSink?: InstanceType<typeof RTCAudioSink>;
     twilioWs: WebSocket;
