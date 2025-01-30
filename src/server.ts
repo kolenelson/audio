@@ -1,10 +1,11 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { RTCPeerConnection, MediaStream, nonstandard } from 'wrtc';
+import wrtc from 'wrtc';
 import fetch from 'node-fetch';
 
-const { RTCAudioSource, RTCAudioSink } = nonstandard;
+const { RTCPeerConnection, MediaStream } = wrtc;
+const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
 
 // Types
 interface AudioConfig {
@@ -14,8 +15,8 @@ interface AudioConfig {
 }
 
 interface StreamSession {
-    peerConnection: RTCPeerConnection;
-    dataChannel: RTCDataChannel;
+    peerConnection: typeof RTCPeerConnection;
+    dataChannel: any; // Using any for RTCDataChannel as it's not exported by wrtc
     audioSource: InstanceType<typeof RTCAudioSource>;
     audioSink?: InstanceType<typeof RTCAudioSink>;
     twilioWs: WebSocket;
@@ -31,6 +32,23 @@ interface TwilioMediaMessage {
         track?: string;
         chunk?: number;
         timestamp?: string;
+    };
+}
+
+interface OpenAISessionResponse {
+    client_secret: {
+        value: string;
+        expires_at: number;
+    };
+}
+
+interface OpenAIMessage {
+    type: string;
+    delta?: string;
+    error?: {
+        message: string;
+        type: string;
+        code?: string;
     };
 }
 
@@ -78,6 +96,23 @@ async function getEphemeralToken(): Promise<string> {
         }
 
         const data = await response.json();
+        
+        function isOpenAISessionResponse(data: unknown): data is OpenAISessionResponse {
+            return (
+                typeof data === 'object' && 
+                data !== null && 
+                'client_secret' in data &&
+                typeof (data as any).client_secret === 'object' &&
+                (data as any).client_secret !== null &&
+                'value' in (data as any).client_secret &&
+                typeof (data as any).client_secret.value === 'string'
+            );
+        }
+
+        if (!isOpenAISessionResponse(data)) {
+            throw new Error('Invalid response format from OpenAI');
+        }
+
         return data.client_secret.value;
     } catch (error) {
         console.error('Error getting ephemeral token:', error);
@@ -146,13 +181,13 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
         };
 
         // Handle incoming tracks from OpenAI
-        pc.ontrack = (event) => {
+        pc.ontrack = (event: any) => {
             if (event.track.kind === 'audio') {
                 console.log('Received audio track from OpenAI');
                 const audioSink = new RTCAudioSink(event.track);
                 session.audioSink = audioSink;
                 
-                audioSink.ondata = (frame) => {
+                audioSink.ondata = (frame: { samples: Float32Array; sampleRate: number }) => {
                     if (!frame.samples || !frame.sampleRate) return;
                     
                     try {
@@ -195,9 +230,9 @@ async function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise
             }));
         };
 
-        dc.onmessage = (event) => {
+        dc.onmessage = (event: { data: string }) => {
             try {
-                const data = JSON.parse(event.data);
+                const data = JSON.parse(event.data) as OpenAIMessage;
                 console.log('Received OpenAI event:', data.type);
             } catch (error) {
                 console.error('Error processing OpenAI message:', error);
@@ -264,9 +299,9 @@ async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
 wss.on('connection', (ws: WebSocket) => {
     console.log('New Twilio connection established');
 
-    ws.on('message', async (message: string) => {
+    ws.on('message', async (message: Buffer) => {
         try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(message.toString());
             
             switch (data.event) {
                 case 'start':
