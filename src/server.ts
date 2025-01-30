@@ -1,13 +1,10 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import wrtc from 'wrtc';
 import fetch from 'node-fetch';
 import { config } from 'dotenv';
-
-const { RTCPeerConnection, MediaStream } = wrtc;
-const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
-config();
+import webrtc from 'node-webrtc';
+const { RTCPeerConnection, MediaStream, RTCAudioSource, RTCAudioSink } = webrtc;
 
 // Type definitions
 interface AudioConfig {
