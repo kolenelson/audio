@@ -143,33 +143,6 @@ async function getEphemeralToken(): Promise<string> {
     }
 }
 
-function resampleAudio(input: Buffer, fromRate: number, toRate: number): Float32Array {
-    // Convert input buffer to Float32Array
-    const inputArray = new Float32Array(input.length / 2);
-    for (let i = 0; i < inputArray.length; i++) {
-        inputArray[i] = input.readInt16LE(i * 2) / 32768.0;
-    }
-
-    const ratio = fromRate / toRate;
-    const outputLength = Math.floor(inputArray.length * (toRate / fromRate));
-    const output = new Float32Array(outputLength);
-
-    for (let i = 0; i < outputLength; i++) {
-        const position = i * ratio;
-        const index = Math.floor(position);
-        const fraction = position - index;
-
-        if (index + 1 < inputArray.length) {
-            output[i] = inputArray[index] * (1 - fraction) + 
-                       inputArray[index + 1] * fraction;
-        } else {
-            output[i] = inputArray[index];
-        }
-    }
-
-    return output;
-}
-
 async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     try {
         // Make sure we have audio data
@@ -265,21 +238,70 @@ async function handleOpenAIMessage(data: OpenAIMessage, session: StreamSession) 
 
 async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
     try {
+        debugLog(`Received Twilio audio buffer of size: ${audioBuffer.length}`);
+        
+        // First, convert the input buffer to Float32Array for processing
+        const inputArray = new Float32Array(audioBuffer.length / 2);
+        for (let i = 0; i < inputArray.length; i++) {
+            inputArray[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
+        }
+
+        // Resample from Twilio's 8kHz to OpenAI's 24kHz
         const resampled = resampleAudio(
             audioBuffer,
             TWILIO_AUDIO_CONFIG.sampleRate,
             OPENAI_AUDIO_CONFIG.sampleRate
         );
 
-        session.audioSource.onData({
-            samples: resampled,
-            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
-            channels: 1,
-            timestamp: Date.now()
-        });
+        // Process audio in 20ms chunks (480 samples at 24kHz)
+        const CHUNK_SIZE = 480;
+        for (let offset = 0; offset < resampled.length; offset += CHUNK_SIZE) {
+            const chunk = resampled.slice(offset, offset + CHUNK_SIZE);
+            
+            // If we don't have a full chunk, pad with silence
+            let finalChunk = chunk;
+            if (chunk.length < CHUNK_SIZE) {
+                finalChunk = new Float32Array(CHUNK_SIZE);
+                finalChunk.set(chunk);
+            }
+
+            session.audioSource.onData({
+                samples: finalChunk,
+                sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
+                channels: 1,
+                timestamp: Date.now()
+            });
+        }
     } catch (error) {
         console.error('Error processing Twilio audio:', error);
     }
+}
+
+function resampleAudio(input: Buffer, fromRate: number, toRate: number): Float32Array {
+    // Convert input buffer to Float32Array
+    const inputArray = new Float32Array(input.length / 2);
+    for (let i = 0; i < inputArray.length; i++) {
+        inputArray[i] = input.readInt16LE(i * 2) / 32768.0;
+    }
+
+    const ratio = fromRate / toRate;
+    const outputLength = Math.floor(inputArray.length * (toRate / fromRate));
+    const output = new Float32Array(outputLength);
+
+    for (let i = 0; i < outputLength; i++) {
+        const position = i * ratio;
+        const index = Math.floor(position);
+        const fraction = position - index;
+
+        if (index + 1 < inputArray.length) {
+            output[i] = inputArray[index] * (1 - fraction) + 
+                       inputArray[index + 1] * fraction;
+        } else {
+            output[i] = inputArray[index];
+        }
+    }
+
+    return output;
 }
 
 function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
