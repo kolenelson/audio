@@ -41,7 +41,6 @@ interface StreamSession {
     streamSid: string;
     mediaChunkCounter: number;
     isStreamingAudio: boolean;
-    audioBuffer: Buffer[];
 }
 
 interface TwilioMediaMessage {
@@ -99,7 +98,6 @@ function debugLog(message: string, data?: any) {
     console.log(`[${new Date().toISOString()}] ${message}`, data ? JSON.stringify(data) : '');
 }
 
-// Utility Functions
 async function getEphemeralToken(): Promise<string> {
     try {
         const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
@@ -145,7 +143,8 @@ async function getEphemeralToken(): Promise<string> {
     }
 }
 
-function resampleAudio(input: Buffer, fromRate: number, toRate: number): Buffer {
+function resampleAudio(input: Buffer, fromRate: number, toRate: number): Float32Array {
+    // Convert input buffer to Float32Array
     const inputArray = new Float32Array(input.length / 2);
     for (let i = 0; i < inputArray.length; i++) {
         inputArray[i] = input.readInt16LE(i * 2) / 32768.0;
@@ -168,69 +167,34 @@ function resampleAudio(input: Buffer, fromRate: number, toRate: number): Buffer 
         }
     }
 
-    const outputBuffer = Buffer.alloc(output.length * 2);
-    for (let i = 0; i < output.length; i++) {
-        const sample = Math.max(-1, Math.min(1, output[i]));
-        outputBuffer.writeInt16LE(Math.round(sample * 32767), i * 2);
-    }
-
-    return outputBuffer;
-}
-
-async function handleOpenAIMessage(data: OpenAIMessage, session: StreamSession) {
-    debugLog('Received OpenAI event:', data.type);
-
-    try {
-        switch (data.type) {
-            case 'response.audio.delta':
-                if (data.delta) {
-                    const audioBuffer = Buffer.from(data.delta, 'base64');
-                    await sendAudioToTwilio(session, audioBuffer);
-                }
-                break;
-
-            case 'output_audio_buffer.audio_started':
-                debugLog('OpenAI audio streaming started');
-                session.isStreamingAudio = true;
-                session.audioBuffer = [];
-                break;
-
-            case 'output_audio_buffer.audio_stopped':
-                debugLog('OpenAI audio streaming stopped');
-                session.isStreamingAudio = false;
-                // Send any remaining buffered audio
-                if (session.audioBuffer.length > 0) {
-                    const combinedBuffer = Buffer.concat(session.audioBuffer);
-                    await sendAudioToTwilio(session, combinedBuffer);
-                    session.audioBuffer = [];
-                }
-                break;
-
-            case 'response.audio_transcript.delta':
-                debugLog('Transcript delta:', data.delta);
-                break;
-
-            case 'error':
-                console.error('OpenAI error:', data.error);
-                break;
-        }
-    } catch (error) {
-        console.error('Error handling OpenAI message:', error);
-    }
+    return output;
 }
 
 async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     try {
+        // Make sure we have audio data
+        if (!audioBuffer || audioBuffer.length === 0) {
+            debugLog('Empty audio buffer received');
+            return;
+        }
+
         // Convert from OpenAI's 24kHz to Twilio's 8kHz
-        const convertedAudio = resampleAudio(
+        const resampled = resampleAudio(
             audioBuffer,
             OPENAI_AUDIO_CONFIG.sampleRate,
             TWILIO_AUDIO_CONFIG.sampleRate
         );
 
+        // Convert to PCM16 format for Twilio
+        const pcm16Buffer = Buffer.alloc(resampled.length * 2);
+        for (let i = 0; i < resampled.length; i++) {
+            const sample = Math.max(-1, Math.min(1, resampled[i]));
+            pcm16Buffer.writeInt16LE(Math.floor(sample * 32767), i * 2);
+        }
+
         // Split into Twilio-sized chunks (160 bytes = 20ms at 8kHz)
-        for (let offset = 0; offset < convertedAudio.length; offset += 160) {
-            const chunk = convertedAudio.slice(offset, Math.min(offset + 160, convertedAudio.length));
+        for (let offset = 0; offset < pcm16Buffer.length; offset += 160) {
+            const chunk = pcm16Buffer.slice(offset, Math.min(offset + 160, pcm16Buffer.length));
             
             // Only send complete chunks
             if (chunk.length === 160) {
@@ -246,16 +210,75 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
                 };
 
                 if (session.twilioWs.readyState === WebSocket.OPEN) {
-                    debugLog(`Sending audio chunk ${session.mediaChunkCounter - 1} to Twilio`);
-                    session.twilioWs.send(JSON.stringify(twilioMessage));
+                    debugLog(`Sending audio chunk ${session.mediaChunkCounter - 1} to Twilio (${chunk.length} bytes)`);
+                    await session.twilioWs.send(JSON.stringify(twilioMessage));
                     
-                    // Add a small delay between chunks to maintain timing
-                    await new Promise(resolve => setTimeout(resolve, 15)); // slightly less than 20ms to account for processing time
+                    // Use a precise delay for 20ms chunks
+                    await new Promise(resolve => setTimeout(resolve, 20));
                 }
             }
         }
     } catch (error) {
         console.error('Error sending audio to Twilio:', error);
+    }
+}
+
+async function handleOpenAIMessage(data: OpenAIMessage, session: StreamSession) {
+    debugLog('Received OpenAI event:', data.type);
+
+    try {
+        switch (data.type) {
+            case 'response.audio.delta':
+                if (data.delta) {
+                    const audioBuffer = Buffer.from(data.delta, 'base64');
+                    if (session.isStreamingAudio) {
+                        await sendAudioToTwilio(session, audioBuffer);
+                    }
+                }
+                break;
+
+            case 'output_audio_buffer.audio_started':
+                debugLog('OpenAI audio streaming started');
+                session.isStreamingAudio = true;
+                break;
+
+            case 'output_audio_buffer.audio_stopped':
+                debugLog('OpenAI audio streaming stopped');
+                session.isStreamingAudio = false;
+                break;
+
+            case 'response.audio_transcript.delta':
+                debugLog('Transcript delta:', data.delta);
+                break;
+
+            case 'error':
+                console.error('OpenAI error:', data.error);
+                break;
+
+            default:
+                debugLog(`Unhandled OpenAI event type: ${data.type}`);
+        }
+    } catch (error) {
+        console.error('Error handling OpenAI message:', error);
+    }
+}
+
+async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
+    try {
+        const resampled = resampleAudio(
+            audioBuffer,
+            TWILIO_AUDIO_CONFIG.sampleRate,
+            OPENAI_AUDIO_CONFIG.sampleRate
+        );
+
+        session.audioSource.onData({
+            samples: resampled,
+            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
+            channels: 1,
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        console.error('Error processing Twilio audio:', error);
     }
 }
 
@@ -283,8 +306,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 twilioWs,
                 streamSid,
                 mediaChunkCounter: 0,
-                isStreamingAudio: false,
-                audioBuffer: []
+                isStreamingAudio: false
             };
 
             // Set up event handlers
@@ -296,7 +318,6 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 debugLog('Connection state changed:', pc.connectionState);
             };
 
-            // Updated to use our custom RTCTrackEvent type
             (pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
                 if (event.track.kind === 'audio') {
                     debugLog('Received audio track from OpenAI');
@@ -308,15 +329,13 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                         if (!session.isStreamingAudio) return;
 
                         try {
-                            const audioBuffer = Buffer.from(frame.samples.buffer);
-                            session.audioBuffer.push(audioBuffer);
-
-                            // If we have enough data, send it to Twilio
-                            if (session.audioBuffer.length >= 5) { // About 100ms worth of audio
-                                const combinedBuffer = Buffer.concat(session.audioBuffer);
-                                sendAudioToTwilio(session, combinedBuffer);
-                                session.audioBuffer = [];
-                            }
+                            // Convert the audio frame to a buffer
+                            const frameBuffer = Buffer.from(frame.samples.buffer);
+                            
+                            // Process and send immediately
+                            sendAudioToTwilio(session, frameBuffer).catch(error => {
+                                console.error('Error sending audio frame:', error);
+                            });
                         } catch (error) {
                             console.error('Error processing OpenAI audio frame:', error);
                         }
@@ -383,25 +402,6 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
     });
 }
 
-async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
-    try {
-        const convertedAudio = resampleAudio(
-            audioBuffer,
-            TWILIO_AUDIO_CONFIG.sampleRate,
-            OPENAI_AUDIO_CONFIG.sampleRate
-        );
-
-        session.audioSource.onData({
-            samples: new Float32Array(convertedAudio.buffer),
-            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
-            channels: 1,
-            timestamp: Date.now()
-        });
-    } catch (error) {
-        console.error('Error processing Twilio audio:', error);
-    }
-}
-
 // WebSocket server handler
 wss.on('connection', (ws: WebSocket) => {
     debugLog('New Twilio connection established');
@@ -454,7 +454,7 @@ wss.on('connection', (ws: WebSocket) => {
                     break;
 
                 default:
-                    debugLog('Unhandled event type:', data.event);
+                    debugLog('Unhandled Twilio event:', data.event);
             }
         } catch (error) {
             console.error('Error processing Twilio message:', error);
