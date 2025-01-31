@@ -7,13 +7,6 @@ import fetch from 'node-fetch';
 const { RTCPeerConnection, MediaStream } = wrtc;
 const { RTCAudioSource, RTCAudioSink } = wrtc.nonstandard;
 
-// Type declarations for WebRTC
-declare global {
-    type MediaStreamTrack = any;
-    type RTCRtpReceiver = any;
-    type RTCRtpTransceiver = any;
-}
-
 // Type definitions
 interface AudioConfig {
     sampleRate: number;
@@ -21,9 +14,9 @@ interface AudioConfig {
     bitsPerSample: number;
 }
 
-interface RTCTrackEvent {
+interface WrtcRTCTrackEvent {
     track: MediaStreamTrack;
-    streams: Array<InstanceType<typeof MediaStream>>;
+    streams: MediaStream[];
     receiver: RTCRtpReceiver;
     transceiver: RTCRtpTransceiver;
 }
@@ -106,6 +99,7 @@ function debugLog(message: string, data?: any) {
     console.log(`[${new Date().toISOString()}] ${message}`, data ? JSON.stringify(data) : '');
 }
 
+// Utility Functions
 async function getEphemeralToken(): Promise<string> {
     try {
         const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
@@ -265,25 +259,6 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     }
 }
 
-async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
-    try {
-        const convertedAudio = resampleAudio(
-            audioBuffer,
-            TWILIO_AUDIO_CONFIG.sampleRate,
-            OPENAI_AUDIO_CONFIG.sampleRate
-        );
-
-        session.audioSource.onData({
-            samples: new Float32Array(convertedAudio.buffer),
-            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
-            channels: 1,
-            timestamp: Date.now()
-        });
-    } catch (error) {
-        console.error('Error processing Twilio audio:', error);
-    }
-}
-
 function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
     return new Promise(async (resolve, reject) => {
         try {
@@ -321,7 +296,8 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 debugLog('Connection state changed:', pc.connectionState);
             };
 
-            pc.ontrack = (event: RTCTrackEvent) => {
+            // Updated to use our custom RTCTrackEvent type
+            (pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
                 if (event.track.kind === 'audio') {
                     debugLog('Received audio track from OpenAI');
                     const audioSink = new RTCAudioSink(event.track);
@@ -350,7 +326,6 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
 
             dc.onopen = () => {
                 debugLog('Data channel opened with OpenAI');
-                // Send initial configuration
                 dc.send(JSON.stringify({
                     type: "response.create",
                     response: {
@@ -406,6 +381,25 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
             reject(error);
         }
     });
+}
+
+async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
+    try {
+        const convertedAudio = resampleAudio(
+            audioBuffer,
+            TWILIO_AUDIO_CONFIG.sampleRate,
+            OPENAI_AUDIO_CONFIG.sampleRate
+        );
+
+        session.audioSource.onData({
+            samples: new Float32Array(convertedAudio.buffer),
+            sampleRate: OPENAI_AUDIO_CONFIG.sampleRate,
+            channels: 1,
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        console.error('Error processing Twilio audio:', error);
+    }
 }
 
 // WebSocket server handler
