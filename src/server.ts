@@ -340,23 +340,30 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
             };
 
             // Handle incoming audio from OpenAI
-            (pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
-                if (event.track.kind === 'audio') {
-                    debugLog('Received audio track from OpenAI');
-                    const audioSink = new RTCAudioSink(event.track);
-                    session.audioSink = audioSink;
-                    
-                    audioSink.ondata = (frame: AudioFrame) => {
-                        if (!frame.samples || !frame.sampleRate) return;
-                        if (!session.isStreamingAudio) return;
+(pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
+    if (event.track.kind === 'audio') {
+        debugLog('Received audio track from OpenAI');
+        const audioSink = new RTCAudioSink(event.track);
+        session.audioSink = audioSink;
+        
+        audioSink.ondata = (frame: AudioFrame) => {
+            if (!frame.samples || !frame.sampleRate) return;
+            if (!session.isStreamingAudio) return;
 
-                        const audioBuffer = Buffer.from(frame.samples.buffer);
-                        sendAudioToTwilio(session, audioBuffer).catch(error => {
-                            console.error('Error sending audio frame:', error);
-                        });
-                    };
-                }
-            };
+            try {
+                // Convert samples to buffer maintaining the original format
+                const audioBuffer = Buffer.from(frame.samples.buffer);
+                debugLog(`Processing audio frame: ${audioBuffer.length} bytes at ${frame.sampleRate}Hz`);
+                
+                sendAudioToTwilio(session, audioBuffer).catch(error => {
+                    console.error('Error sending audio frame:', error);
+                });
+            } catch (error) {
+                console.error('Error processing OpenAI audio frame:', error);
+            }
+        };
+    }
+};
 
             dc.onopen = () => {
                 debugLog('Data channel opened with OpenAI');
