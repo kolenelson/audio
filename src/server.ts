@@ -178,26 +178,21 @@ async function getEphemeralToken(): Promise<string> {
 async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
     try {
         debugLog(`Raw Twilio audio buffer: size=${audioBuffer.length}, byteLength=${audioBuffer.byteLength}`);
+        
+        // Copy the buffer exactly as is
+        const rawBuffer = Buffer.from(audioBuffer);
+        
+        // Convert to Float32Array while maintaining the same buffer size
+        const float32Data = new Float32Array(rawBuffer.buffer);
+        
+        debugLog(`Sending audio to OpenAI: buffer=${rawBuffer.length}, samples=${float32Data.length}`);
 
-        // Create a fixed-size array for the samples
-        const numSamples = Math.floor(audioBuffer.length / 2);
-        const samples = new Float32Array(numSamples);
-
-        // Read PCM16 samples directly into Float32Array
-        for (let i = 0; i < numSamples; i++) {
-            samples[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
-        }
-
-        debugLog(`Created Float32Array with ${samples.length} samples`);
-
-        // Send directly to OpenAI's audio source
         session.audioSource.onData({
-            samples,
+            samples: float32Data,
             sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
             channels: 1,
             timestamp: Date.now()
         });
-
     } catch (error) {
         console.error('Error details:', {
             error: error instanceof Error ? error.message : String(error),
@@ -211,30 +206,11 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     try {
         debugLog(`Processing OpenAI audio buffer of size: ${audioBuffer.length}`);
 
-        // Convert 24kHz buffer to samples
-        const numInputSamples = Math.floor(audioBuffer.length / 2);
-        const inputSamples = new Float32Array(numInputSamples);
-        for (let i = 0; i < numInputSamples; i++) {
-            inputSamples[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
-        }
+        // Keep the raw buffer and convert to PCM16
+        const outputBuffer = Buffer.alloc(audioBuffer.length);
+        audioBuffer.copy(outputBuffer);
 
-        // Downsample to 8kHz
-        const ratio = OPENAI_AUDIO_CONFIG.sampleRate / TWILIO_AUDIO_CONFIG.sampleRate;
-        const numOutputSamples = Math.floor(numInputSamples / ratio);
-        const outputSamples = new Float32Array(numOutputSamples);
-
-        for (let i = 0; i < numOutputSamples; i++) {
-            outputSamples[i] = inputSamples[Math.floor(i * ratio)];
-        }
-
-        // Convert to PCM16 (16-bit samples)
-        const outputBuffer = Buffer.alloc(numOutputSamples * 2);
-        for (let i = 0; i < numOutputSamples; i++) {
-            const value = Math.max(-1, Math.min(1, outputSamples[i]));
-            outputBuffer.writeInt16LE(Math.floor(value * 32767), i * 2);
-        }
-
-        // Send to Twilio in chunks
+        // Send in 160-byte chunks
         for (let offset = 0; offset < outputBuffer.length; offset += 160) {
             const chunk = outputBuffer.slice(offset, Math.min(offset + 160, outputBuffer.length));
             if (chunk.length === 160) {
