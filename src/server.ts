@@ -179,13 +179,15 @@ async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
     try {
         debugLog(`Raw Twilio audio buffer: size=${audioBuffer.length}, byteLength=${audioBuffer.byteLength}`);
         
-        // Copy the buffer exactly as is
-        const rawBuffer = Buffer.from(audioBuffer);
+        // Create a Float32Array of exactly the right size (80 samples for 160 bytes)
+        const float32Data = new Float32Array(80);  // 160 bytes / 2 bytes per sample = 80 samples
         
-        // Convert to Float32Array while maintaining the same buffer size
-        const float32Data = new Float32Array(rawBuffer.buffer);
+        // Convert PCM16 to Float32 manually
+        for (let i = 0; i < 80; i++) {
+            float32Data[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
+        }
         
-        debugLog(`Sending audio to OpenAI: buffer=${rawBuffer.length}, samples=${float32Data.length}`);
+        debugLog(`Created Float32Array: samples=${float32Data.length}, byteLength=${float32Data.byteLength}`);
 
         session.audioSource.onData({
             samples: float32Data,
@@ -204,11 +206,19 @@ async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
 
 async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     try {
-        debugLog(`Processing OpenAI audio buffer of size: ${audioBuffer.length}`);
+        debugLog(`Received OpenAI audio buffer of size: ${audioBuffer.length}`);
 
-        // Keep the raw buffer and convert to PCM16
-        const outputBuffer = Buffer.alloc(audioBuffer.length);
-        audioBuffer.copy(outputBuffer);
+        // Convert to 8kHz PCM16
+        const samples = audioBuffer.length / 2;
+        const ratio = OPENAI_AUDIO_CONFIG.sampleRate / TWILIO_AUDIO_CONFIG.sampleRate;
+        const outputLength = Math.floor(samples / ratio);
+        const outputBuffer = Buffer.alloc(outputLength * 2);
+
+        for (let i = 0; i < outputLength; i++) {
+            const inputIndex = Math.floor(i * ratio) * 2;
+            const sample = audioBuffer.readInt16LE(inputIndex);
+            outputBuffer.writeInt16LE(sample, i * 2);
+        }
 
         // Send in 160-byte chunks
         for (let offset = 0; offset < outputBuffer.length; offset += 160) {
@@ -233,54 +243,6 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
         }
     } catch (error) {
         console.error('Error sending audio to Twilio:', error);
-    }
-}
-
-async function handleOpenAIMessage(data: OpenAIMessage, session: StreamSession) {
-    debugLog('Received OpenAI event:', data.type);
-
-    try {
-        switch (data.type) {
-            case 'session.created':
-            case 'session.updated':
-                debugLog(`Session event: ${data.type}`);
-                break;
-
-            case 'response.created':
-                debugLog('New response started');
-                break;
-
-            case 'response.audio.delta':
-                if (data.delta) {
-                    const audioBuffer = Buffer.from(data.delta, 'base64');
-                    await sendAudioToTwilio(session, audioBuffer);
-                }
-                break;
-
-            case 'output_audio_buffer.audio_started':
-                debugLog('OpenAI audio streaming started');
-                session.isStreamingAudio = true;
-                session.mediaChunkCounter = 0;  // Reset counter for new stream
-                break;
-
-            case 'output_audio_buffer.audio_stopped':
-                debugLog('OpenAI audio streaming stopped');
-                session.isStreamingAudio = false;
-                break;
-
-            case 'response.audio_transcript.delta':
-                debugLog('Transcript delta:', data.delta);
-                break;
-
-            case 'error':
-                console.error('OpenAI error:', data.error);
-                break;
-
-            default:
-                debugLog(`Unhandled OpenAI event type: ${data.type}`);
-        }
-    } catch (error) {
-        console.error('Error handling OpenAI message:', error);
     }
 }
 
