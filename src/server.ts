@@ -71,10 +71,6 @@ interface OpenAIMessage {
     };
 }
 
-// Constants
-const AUDIO_GAIN = 2.0; // Increase volume
-const MIN_AUDIO_LEVEL = 0.01; // Minimum audio level to send
-
 // Audio configurations
 const TWILIO_AUDIO_CONFIG: AudioConfig = {
     sampleRate: 8000,
@@ -100,34 +96,6 @@ const sessions = new Map<string, StreamSession>();
 // Debug logging function
 function debugLog(message: string, data?: any) {
     console.log(`[${new Date().toISOString()}] ${message}`, data ? JSON.stringify(data) : '');
-}
-
-// Utility Functions
-function adjustVolume(samples: Float32Array, gain: number): Float32Array {
-    const adjusted = new Float32Array(samples.length);
-    let maxLevel = 0;
-    
-    // First pass - find max level
-    for (let i = 0; i < samples.length; i++) {
-        maxLevel = Math.max(maxLevel, Math.abs(samples[i]));
-    }
-
-    // Only apply gain if we have significant audio
-    if (maxLevel > MIN_AUDIO_LEVEL) {
-        // Calculate safe gain to avoid clipping
-        const safeGain = Math.min(gain, 1.0 / maxLevel);
-        
-        // Apply gain
-        for (let i = 0; i < samples.length; i++) {
-            adjusted[i] = samples[i] * safeGain;
-        }
-        debugLog(`Applied audio gain: ${safeGain}, max level: ${maxLevel}`);
-    } else {
-        debugLog('Audio level too low, not applying gain');
-        adjusted.set(samples);
-    }
-
-    return adjusted;
 }
 
 async function getEphemeralToken(): Promise<string> {
@@ -246,6 +214,54 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     }
 }
 
+async function handleOpenAIMessage(data: OpenAIMessage, session: StreamSession) {
+    debugLog('Received OpenAI event:', data.type);
+
+    try {
+        switch (data.type) {
+            case 'session.created':
+            case 'session.updated':
+                debugLog(`Session event: ${data.type}`);
+                break;
+
+            case 'response.created':
+                debugLog('New response started');
+                break;
+
+            case 'response.audio.delta':
+                if (data.delta) {
+                    const audioBuffer = Buffer.from(data.delta, 'base64');
+                    await sendAudioToTwilio(session, audioBuffer);
+                }
+                break;
+
+            case 'output_audio_buffer.audio_started':
+                debugLog('OpenAI audio streaming started');
+                session.isStreamingAudio = true;
+                session.mediaChunkCounter = 0;  // Reset counter for new stream
+                break;
+
+            case 'output_audio_buffer.audio_stopped':
+                debugLog('OpenAI audio streaming stopped');
+                session.isStreamingAudio = false;
+                break;
+
+            case 'response.audio_transcript.delta':
+                debugLog('Transcript delta:', data.delta);
+                break;
+
+            case 'error':
+                console.error('OpenAI error:', data.error);
+                break;
+
+            default:
+                debugLog(`Unhandled OpenAI event type: ${data.type}`);
+        }
+    } catch (error) {
+        console.error('Error handling OpenAI message:', error);
+    }
+}
+
 function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<StreamSession> {
     return new Promise(async (resolve, reject) => {
         try {
@@ -282,25 +298,27 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 debugLog('Connection state changed:', pc.connectionState);
             };
 
-            // Handle incoming audio from OpenAI
-(pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
-    if (event.track.kind === 'audio') {
-        debugLog('Received audio track from OpenAI');
-        const audioSink = new RTCAudioSink(event.track);
-        session.audioSink = audioSink;
-        
-        audioSink.ondata = (frame: AudioFrame) => {
-            if (!frame.samples || !frame.sampleRate) return;
-            if (!session.isStreamingAudio) return;
+            (pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
+                if (event.track.kind === 'audio') {
+                    debugLog('Received audio track from OpenAI');
+                    const audioSink = new RTCAudioSink(event.track);
+                    session.audioSink = audioSink;
+                    
+                    audioSink.ondata = (frame: AudioFrame) => {
+                        if (!frame.samples || !frame.sampleRate) return;
+                        if (!session.isStreamingAudio) return;
 
-            // Convert samples to buffer
-            const audioBuffer = Buffer.from(frame.samples.buffer);
-            sendAudioToTwilio(session, audioBuffer).catch(error => {
-                console.error('Error sending audio frame:', error);
-            });
-        };
-    }
-};
+                        try {
+                            const audioBuffer = Buffer.from(frame.samples.buffer);
+                            sendAudioToTwilio(session, audioBuffer).catch(error => {
+                                console.error('Error sending audio frame:', error);
+                            });
+                        } catch (error) {
+                            console.error('Error processing OpenAI audio frame:', error);
+                        }
+                    };
+                }
+            };
 
             dc.onopen = () => {
                 debugLog('Data channel opened with OpenAI');
