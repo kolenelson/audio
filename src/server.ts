@@ -260,15 +260,26 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
         try {
             const ephemeralKey = await getEphemeralToken();
             
+            // Create peer connection with specific configuration
             const pc = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+                sdpSemantics: 'unified-plan'
             });
 
-            // Create audio source but don't use onData
+            // Create audio source and track
             const audioSource = new RTCAudioSource();
+            const audioTrack = audioSource.createTrack();
+            
+            // Add transceiver with specific init
+            pc.addTransceiver(audioTrack, {
+                direction: 'sendrecv',
+                streams: [new MediaStream([audioTrack])]
+            });
 
+            // Create data channel with specific options
             const dc = pc.createDataChannel("oai-events", {
-                ordered: true
+                ordered: true,
+                protocol: 'json'
             });
 
             const session: StreamSession = {
@@ -281,7 +292,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 isStreamingAudio: false
             };
 
-            // Handle incoming audio from OpenAI
+            // Set up media handlers
             pc.ontrack = (event: any) => {
                 if (event.track.kind === 'audio') {
                     debugLog('Received audio track from OpenAI');
@@ -293,9 +304,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                         if (!session.isStreamingAudio) return;
 
                         try {
-                            // Convert samples to Twilio format
-                            const audioBuffer = Buffer.from(frame.samples.buffer);
-                            const chunk = audioBuffer.slice(0, 160);  // Take exactly 160 bytes
+                            const chunk = Buffer.from(frame.samples.buffer).slice(0, 160);
                             
                             const twilioMessage: TwilioMediaMessage = {
                                 event: 'media',
@@ -309,7 +318,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                             };
 
                             if (session.twilioWs.readyState === WebSocket.OPEN) {
-                                session.twilioWs.send(JSON.stringify(twilioMessage));
+                                twilioWs.send(JSON.stringify(twilioMessage));
                             }
                         } catch (error) {
                             console.error('Error processing OpenAI audio frame:', error);
@@ -318,6 +327,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 }
             };
 
+            // Data channel handlers
             dc.onopen = () => {
                 debugLog('Data channel opened with OpenAI');
                 dc.send(JSON.stringify({
@@ -338,9 +348,19 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 }
             };
 
-            // Create and send offer
-            const offer = await pc.createOffer();
+            // Create and configure the SDP offer
+            const offer = await pc.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: false,
+                voiceActivityDetection: true
+            });
+
+            // Ensure proper audio codec configuration in SDP
+            offer.sdp = offer.sdp?.replace('useinbandfec=1', 'useinbandfec=1; stereo=0; maxaveragebitrate=128000');
+            
             await pc.setLocalDescription(offer);
+
+            debugLog('Sending SDP offer to OpenAI:', { sdp: offer.sdp });
 
             const response = await fetch(
                 `https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17`,
@@ -356,10 +376,13 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
             );
 
             if (!response.ok) {
-                throw new Error(`OpenAI SDP error: ${response.status} ${response.statusText}`);
+                const errorText = await response.text();
+                throw new Error(`OpenAI SDP error: ${response.status} ${response.statusText}\n${errorText}`);
             }
 
             const sdpAnswer = await response.text();
+            debugLog('Received SDP answer from OpenAI');
+
             await pc.setRemoteDescription({
                 type: "answer",
                 sdp: sdpAnswer
