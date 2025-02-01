@@ -145,33 +145,18 @@ async function getEphemeralToken(): Promise<string> {
 
 async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
     try {
-        debugLog(`Raw Twilio audio buffer: size=${audioBuffer.length}, byteLength=${audioBuffer.byteLength}`);
-
-        // Keep the original PCM16 format, but ensure it's exactly 160 bytes
-        const pcm16Buffer = Buffer.alloc(160);
-        audioBuffer.copy(pcm16Buffer, 0, 0, 160);
-
-        // Create temporary Float32Array for conversion
-        const float32Temp = new Float32Array(80);
-        for (let i = 0; i < 80; i++) {
-            float32Temp[i] = pcm16Buffer.readInt16LE(i * 2) / 32768.0;
-        }
-
-        // Pass the samples to OpenAI
-        session.audioSource.onData({
-            samples: float32Temp,
-            sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
-            channels: 1,
-            timestamp: Date.now()
-        });
-
-        debugLog(`Sent audio to OpenAI: PCM size=${pcm16Buffer.length}, samples=${float32Temp.length}`);
+        // Skip the audio source completely and work with the track directly
+        const audioTrack = session.audioSource.createTrack();
+        
+        // Create a MediaStream with our track
+        const mediaStream = new MediaStream([audioTrack]);
+        
+        // Add the track to the peer connection
+        session.peerConnection.addTrack(audioTrack, mediaStream);
+        
+        debugLog(`Added audio track to peer connection: buffer size=${audioBuffer.length}`);
     } catch (error) {
-        console.error('Error details:', {
-            error: error instanceof Error ? error.message : String(error),
-            bufferSize: audioBuffer ? audioBuffer.length : 'no buffer',
-            bufferType: audioBuffer ? audioBuffer.constructor.name : 'no buffer'
-        });
+        console.error('Error details:', error);
     }
 }
 
@@ -279,9 +264,8 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
             });
 
+            // Create audio source but don't use onData
             const audioSource = new RTCAudioSource();
-            const audioTrack = audioSource.createTrack();
-            pc.addTrack(audioTrack);
 
             const dc = pc.createDataChannel("oai-events", {
                 ordered: true
@@ -297,16 +281,8 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                 isStreamingAudio: false
             };
 
-            // Set up event handlers
-            pc.oniceconnectionstatechange = () => {
-                debugLog('ICE connection state changed:', pc.iceConnectionState);
-            };
-
-            pc.onconnectionstatechange = () => {
-                debugLog('Connection state changed:', pc.connectionState);
-            };
-
-            (pc as any).ontrack = (event: WrtcRTCTrackEvent) => {
+            // Handle incoming audio from OpenAI
+            pc.ontrack = (event: any) => {
                 if (event.track.kind === 'audio') {
                     debugLog('Received audio track from OpenAI');
                     const audioSink = new RTCAudioSink(event.track);
@@ -317,10 +293,24 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
                         if (!session.isStreamingAudio) return;
 
                         try {
+                            // Convert samples to Twilio format
                             const audioBuffer = Buffer.from(frame.samples.buffer);
-                            sendAudioToTwilio(session, audioBuffer).catch(error => {
-                                console.error('Error sending audio frame:', error);
-                            });
+                            const chunk = audioBuffer.slice(0, 160);  // Take exactly 160 bytes
+                            
+                            const twilioMessage: TwilioMediaMessage = {
+                                event: 'media',
+                                streamSid: session.streamSid,
+                                media: {
+                                    payload: chunk.toString('base64'),
+                                    track: 'outbound',
+                                    chunk: session.mediaChunkCounter++,
+                                    timestamp: new Date().toISOString()
+                                }
+                            };
+
+                            if (session.twilioWs.readyState === WebSocket.OPEN) {
+                                session.twilioWs.send(JSON.stringify(twilioMessage));
+                            }
                         } catch (error) {
                             console.error('Error processing OpenAI audio frame:', error);
                         }
@@ -349,9 +339,7 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
             };
 
             // Create and send offer
-            const offer = await pc.createOffer({
-                offerToReceiveAudio: true
-            });
+            const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
             const response = await fetch(
