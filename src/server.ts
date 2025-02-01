@@ -177,58 +177,64 @@ async function getEphemeralToken(): Promise<string> {
 
 async function handleTwilioAudio(session: StreamSession, audioBuffer: Buffer) {
     try {
-        // Log the incoming buffer details
         debugLog(`Raw Twilio audio buffer: size=${audioBuffer.length}, byteLength=${audioBuffer.byteLength}`);
-        
-        // Create a new buffer from just the data we need
-        const processedBuffer = audioBuffer.slice(0, 160);
-        debugLog(`Processed buffer size: ${processedBuffer.length}`);
 
-        // Convert directly to Float32Array
-        const float32Data = new Float32Array(processedBuffer.length / 2);
-        for (let i = 0; i < float32Data.length; i++) {
-            float32Data[i] = processedBuffer.readInt16LE(i * 2) / 32768.0;
+        // Create a fixed-size array for the samples
+        const numSamples = Math.floor(audioBuffer.length / 2);
+        const samples = new Float32Array(numSamples);
+
+        // Read PCM16 samples directly into Float32Array
+        for (let i = 0; i < numSamples; i++) {
+            samples[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
         }
 
-        // Send to OpenAI
+        debugLog(`Created Float32Array with ${samples.length} samples`);
+
+        // Send directly to OpenAI's audio source
         session.audioSource.onData({
-            samples: float32Data,
+            samples,
             sampleRate: TWILIO_AUDIO_CONFIG.sampleRate,
             channels: 1,
             timestamp: Date.now()
         });
+
     } catch (error) {
-        console.error('Error processing Twilio audio:', error);
+        console.error('Error details:', {
+            error: error instanceof Error ? error.message : String(error),
+            bufferSize: audioBuffer ? audioBuffer.length : 'no buffer',
+            bufferType: audioBuffer ? audioBuffer.constructor.name : 'no buffer'
+        });
     }
 }
-
 
 async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
     try {
         debugLog(`Processing OpenAI audio buffer of size: ${audioBuffer.length}`);
 
-        // Convert from 24kHz to 8kHz
-        const inputSamples = new Float32Array(audioBuffer.length / 2);
-        for (let i = 0; i < inputSamples.length; i++) {
+        // Convert 24kHz buffer to samples
+        const numInputSamples = Math.floor(audioBuffer.length / 2);
+        const inputSamples = new Float32Array(numInputSamples);
+        for (let i = 0; i < numInputSamples; i++) {
             inputSamples[i] = audioBuffer.readInt16LE(i * 2) / 32768.0;
         }
 
+        // Downsample to 8kHz
         const ratio = OPENAI_AUDIO_CONFIG.sampleRate / TWILIO_AUDIO_CONFIG.sampleRate;
-        const outputLength = Math.floor(inputSamples.length / ratio);
-        const outputSamples = new Float32Array(outputLength);
+        const numOutputSamples = Math.floor(numInputSamples / ratio);
+        const outputSamples = new Float32Array(numOutputSamples);
 
-        for (let i = 0; i < outputLength; i++) {
+        for (let i = 0; i < numOutputSamples; i++) {
             outputSamples[i] = inputSamples[Math.floor(i * ratio)];
         }
 
-        // Convert back to PCM16 format
-        const outputBuffer = Buffer.alloc(outputSamples.length * 2);
-        for (let i = 0; i < outputSamples.length; i++) {
+        // Convert to PCM16 (16-bit samples)
+        const outputBuffer = Buffer.alloc(numOutputSamples * 2);
+        for (let i = 0; i < numOutputSamples; i++) {
             const value = Math.max(-1, Math.min(1, outputSamples[i]));
             outputBuffer.writeInt16LE(Math.floor(value * 32767), i * 2);
         }
 
-        // Send in 160-byte chunks
+        // Send to Twilio in chunks
         for (let offset = 0; offset < outputBuffer.length; offset += 160) {
             const chunk = outputBuffer.slice(offset, Math.min(offset + 160, outputBuffer.length));
             if (chunk.length === 160) {
@@ -244,7 +250,7 @@ async function sendAudioToTwilio(session: StreamSession, audioBuffer: Buffer) {
                 };
 
                 if (session.twilioWs.readyState === WebSocket.OPEN) {
-                    debugLog(`Sending audio chunk ${session.mediaChunkCounter - 1} to Twilio`);
+                    debugLog(`Sending audio chunk ${session.mediaChunkCounter - 1} to Twilio (${chunk.length} bytes)`);
                     session.twilioWs.send(JSON.stringify(twilioMessage));
                 }
             }
@@ -349,17 +355,11 @@ function initializeWebRTC(streamSid: string, twilioWs: WebSocket): Promise<Strea
             if (!frame.samples || !frame.sampleRate) return;
             if (!session.isStreamingAudio) return;
 
-            try {
-                // Convert samples to buffer maintaining the original format
-                const audioBuffer = Buffer.from(frame.samples.buffer);
-                debugLog(`Processing audio frame: ${audioBuffer.length} bytes at ${frame.sampleRate}Hz`);
-                
-                sendAudioToTwilio(session, audioBuffer).catch(error => {
-                    console.error('Error sending audio frame:', error);
-                });
-            } catch (error) {
-                console.error('Error processing OpenAI audio frame:', error);
-            }
+            // Convert samples to buffer
+            const audioBuffer = Buffer.from(frame.samples.buffer);
+            sendAudioToTwilio(session, audioBuffer).catch(error => {
+                console.error('Error sending audio frame:', error);
+            });
         };
     }
 };
